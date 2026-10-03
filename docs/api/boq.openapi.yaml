@@ -1,0 +1,771 @@
+openapi: 3.1.0
+info:
+  title: Construction OS — BOQ Service API
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Bill of Quantities (BOQ) Service — Phase 4.
+    Financial precision: all monetary fields are DECIMAL(19,4) returned as string.
+    All calculations use decimal.js ROUND_HALF_UP.
+
+    **Reviewed 2026-08-31** against `backend/src/modules/boq/` at the origin/develop merge. The
+    controller changed only where the package restructure moved `JwtAuthGuard` to `shared/`; no DTO
+    changed. The service-side change is the OQ-23 version total — it now sums every category at
+    every depth rather than root categories only — which alters the NUMBER a version reports, not
+    the shape of any request or response. This line records the comparison the freshness gate asks
+    for, which compares commit timestamps and cannot tell an import move from an API change.
+
+    **ADR-061 ราคากลาง feed (2026-09-15).** Additive only (QM-2, QM-9): BoqItem gains nullable
+    `central_price_id`, `reference_price` and `price_variance`; AddBoqItemDto / UpdateBoqItemDto gain
+    optional `use_central_price` (AddBoqItemDto.unit_cost becomes optional exactly when it is true); and
+    `GET /boq/projects/{projectId}/price-variance` is new. The catalog itself is documented in
+    `central-prices.openapi.yaml`.
+servers:
+  - url: /api/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: boq-versions
+    description: BOQ version management
+  - name: boq-categories
+    description: BOQ category management
+  - name: boq-items
+    description: BOQ line item management
+  - name: boq-price-variance
+    description: BOQ versus ราคากลาง central price (ADR-061)
+
+paths:
+  /projects/{projectId}/boq/versions:
+    post:
+      tags: [boq-versions]
+      operationId: createBoqVersion
+      summary: Create a new BOQ version
+      description: |
+        Creates a new DRAFT BOQ version. Only one DRAFT allowed per project.
+        If previous APPROVED version exists, copies all items to the new DRAFT.
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBoqVersionDto'
+      responses:
+        '201':
+          description: BOQ version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqVersion'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      tags: [boq-versions]
+      operationId: listBoqVersions
+      summary: List all BOQ versions for a project
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+      responses:
+        '200':
+          description: List of BOQ versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BoqVersion'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /projects/{projectId}/boq/versions/{versionId}:
+    get:
+      tags: [boq-versions]
+      operationId: getBoqVersionDetail
+      summary: Get BOQ version with all categories and items
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/versionId'
+      responses:
+        '200':
+          description: BOQ version detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqVersionDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectId}/boq/versions/{versionId}/approve:
+    post:
+      tags: [boq-versions]
+      operationId: approveBoqVersion
+      summary: Approve a DRAFT BOQ version
+      description: |
+        Approves the DRAFT version. Sets any existing APPROVED version to SUPERSEDED.
+        APPROVED and SUPERSEDED versions become immutable.
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/versionId'
+      responses:
+        '200':
+          description: Version approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqVersion'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /boq/versions/{versionId}/categories:
+    post:
+      tags: [boq-categories]
+      operationId: addBoqCategory
+      summary: Add a category to a DRAFT BOQ version
+      parameters:
+        - $ref: '#/components/parameters/versionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddBoqCategoryDto'
+      responses:
+        '201':
+          description: Category added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqCategory'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /boq/versions/{versionId}/items:
+    post:
+      tags: [boq-items]
+      operationId: addBoqItem
+      summary: Add a line item to a DRAFT BOQ version
+      description: |
+        estimated_total is calculated server-side as ROUND(quantity × unit_cost, 4) HALF_UP.
+
+        ADR-061 ราคากลาง: when `item_code` has an ACTIVE central price (the newest effective_period) in the
+        item's currency, the line is linked — `central_price_id`, `reference_price` (snapshot) and
+        `price_variance` = unit_cost − reference_price (Mode A). With `use_central_price: true` the unit
+        cost is taken from that price (Mode B); a line that cannot be priced that way is refused with
+        COS-CPRICE-006, and sending `unit_cost` as well is refused with COS-CPRICE-007.
+      parameters:
+        - $ref: '#/components/parameters/versionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddBoqItemDto'
+      responses:
+        '201':
+          description: Item added; category subtotal and version total recalculated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /boq/items/{itemId}:
+    patch:
+      tags: [boq-items]
+      operationId: updateBoqItem
+      summary: Update a BOQ line item (DRAFT version only)
+      description: |
+        ADR-061: a line already linked keeps its reference_price snapshot and has price_variance
+        recomputed against the new unit cost; a line not yet linked is looked up again. With
+        `use_central_price: true` the snapshot is re-taken from the current ACTIVE central price and the
+        unit cost set to it (COS-CPRICE-006 when that is impossible, COS-CPRICE-007 with unit_cost).
+      parameters:
+        - $ref: '#/components/parameters/itemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBoqItemDto'
+      responses:
+        '200':
+          description: Item updated; totals recalculated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      tags: [boq-items]
+      operationId: deleteBoqItem
+      summary: Delete a BOQ line item (DRAFT version only)
+      parameters:
+        - $ref: '#/components/parameters/itemId'
+      responses:
+        '204':
+          description: Item deleted; totals recalculated
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /boq/projects/{projectId}/price-variance:
+    get:
+      tags: [boq-price-variance]
+      operationId: getBoqPriceVariance
+      summary: BOQ vs central price (ราคากลาง) variance per item, with totals, for one version
+      description: |
+        ADR-061 §API. Reports one BOQ version of the project: `version_id` when given (it must belong to
+        the project), otherwise the newest version — the DRAFT being estimated when one exists.
+        Per item: the stored snapshot (`reference_price`, `price_variance`) plus
+        `reference_total` = ROUND(quantity × reference_price, 4) HALF_UP and
+        `variance_total` = estimated_total − reference_total. Totals cover LINKED items only, except
+        `estimated_total`, which covers every item; `variance_total` = `referenced_estimated_total` −
+        `reference_total`. Money is DECIMAL(19,4) as strings. Roles: EXECUTIVE, PROJECT_MANAGER, FINANCE,
+        PROCUREMENT_OFFICER, TENANT_ADMIN, SITE_ENGINEER — the BOQ read roles (ADR-061 §RBAC).
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - in: query
+          name: version_id
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: The version to report. Default — the newest version of the project.
+      responses:
+        '200':
+          description: The variance report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceVarianceReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /boq/versions/{versionId}/export:
+    get:
+      tags: [boq-versions]
+      operationId: exportBoqVersion
+      summary: Export a BOQ version as structured JSON (default) or CSV (?format=csv)
+      parameters:
+        - $ref: '#/components/parameters/versionId'
+        - in: query
+          name: format
+          required: false
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: Response format — `json` (default, structured) or `csv` (flat item rows).
+      responses:
+        '200':
+          description: |
+            Full BOQ export. `application/json` = structured version + categories + items;
+            `text/csv` = one row per line item (12 columns incl. carbon), RFC 4180.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoqVersionDetail'
+            text/csv:
+              schema:
+                type: string
+              example: |
+                version_number,category_code,category_name,item_code,description,unit,quantity,unit_cost,estimated_total,currency_code,carbon_factor_kg_co2e,carbon_total_kg_co2e
+                1,CAT-01,Concrete,ITM-01,Cement bag,bag,10.0000,150.0000,1500.0000,THB,,
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    projectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    versionId:
+      name: versionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    itemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    BoqVersion:
+      type: object
+      required:
+        - version_id
+        - project_id
+        - tenant_id
+        - version_number
+        - status
+        - total_estimated_amount
+        - total_estimated_currency
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        version_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        version_number:
+          type: integer
+          minimum: 1
+        version_name:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [DRAFT, APPROVED, SUPERSEDED]
+        total_estimated_amount:
+          type: string
+          description: DECIMAL(19,4) as string — never float
+          example: '420000.0000'
+        total_estimated_currency:
+          type: string
+          example: THB
+        approved_by:
+          type: [string, 'null']
+          format: uuid
+        approved_at:
+          type: [string, 'null']
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BoqCategory:
+      type: object
+      required:
+        [
+          category_id,
+          version_id,
+          tenant_id,
+          category_code,
+          category_name,
+          sort_order,
+          subtotal_amount,
+        ]
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        version_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        parent_category_id:
+          type: [string, 'null']
+          format: uuid
+        category_code:
+          type: string
+        category_name:
+          type: string
+        sort_order:
+          type: integer
+        subtotal_amount:
+          type: string
+          description: DECIMAL(19,4) as string — computed sum of items
+          example: '420000.0000'
+
+    BoqItem:
+      type: object
+      required:
+        - item_id
+        - category_id
+        - version_id
+        - description
+        - unit
+        - quantity
+        - unit_cost
+        - estimated_total
+        - currency_code
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        category_id:
+          type: string
+          format: uuid
+        version_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        item_code:
+          type: [string, 'null']
+        description:
+          type: string
+        unit:
+          type: string
+        quantity:
+          type: string
+          description: DECIMAL(10,4) as string
+          example: '150.0000'
+        unit_cost:
+          type: string
+          description: DECIMAL(19,4) as string
+          example: '2800.0000'
+        estimated_total:
+          type: string
+          description: ROUND(quantity × unit_cost, 4) HALF_UP as string
+          example: '420000.0000'
+        currency_code:
+          type: string
+          example: THB
+        sort_order:
+          type: integer
+        carbon_factor_kg_co2e:
+          type: [string, 'null']
+          description: kgCO2e per unit; NULL until CarbonCalculationEngine activated
+        carbon_total_kg_co2e:
+          type: [string, 'null']
+          description: ROUND(quantity × carbon_factor, 4); NULL if factor is NULL
+        central_price_id:
+          type: [string, 'null']
+          format: uuid
+          description: ADR-061 — the platform.central_price_catalog row this line is linked to; NULL when unlinked
+        reference_price:
+          type: [string, 'null']
+          description: ADR-061 — DECIMAL(19,4) snapshot of the central price when the line was linked
+          example: '2450.0000'
+        price_variance:
+          type: [string, 'null']
+          description: ADR-061 — unit_cost − reference_price, DECIMAL(19,4), signed
+          example: '50.0000'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BoqVersionDetail:
+      type: object
+      required: [version, categories, items]
+      properties:
+        version:
+          $ref: '#/components/schemas/BoqVersion'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/BoqCategory'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BoqItem'
+
+    CreateBoqVersionDto:
+      type: object
+      properties:
+        version_name:
+          type: string
+          maxLength: 100
+          example: 'Revised estimate Q3'
+        currency_code:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          default: THB
+
+    AddBoqCategoryDto:
+      type: object
+      required: [category_code, category_name]
+      properties:
+        parent_category_id:
+          type: [string, 'null']
+          format: uuid
+        category_code:
+          type: string
+          maxLength: 50
+          example: STR-01
+        category_name:
+          type: string
+          maxLength: 255
+          example: Structural Works
+        sort_order:
+          type: integer
+          minimum: 0
+          default: 0
+
+    AddBoqItemDto:
+      type: object
+      description: unit_cost is required unless use_central_price is true, and must not be sent with it.
+      required: [category_id, description, unit, quantity]
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        item_code:
+          type: [string, 'null']
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 5000
+        unit:
+          type: string
+          maxLength: 50
+        quantity:
+          type: string
+          pattern: '^\d{1,19}(\.\d{1,4})?$'
+          example: '150.0000'
+        unit_cost:
+          type: string
+          pattern: '^\d{1,19}(\.\d{1,4})?$'
+          example: '2800.0000'
+        currency_code:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          default: THB
+        sort_order:
+          type: integer
+          minimum: 0
+          default: 0
+        use_central_price:
+          type: boolean
+          default: false
+          description: |
+            ADR-061 Mode B — take unit_cost from the ACTIVE central price for item_code (requires
+            item_code). The unit cost stays editable afterwards.
+
+    PriceVarianceItem:
+      type: object
+      required:
+        [
+          item_id,
+          item_code,
+          description,
+          unit,
+          quantity,
+          unit_cost,
+          estimated_total,
+          currency_code,
+          central_price_id,
+          reference_price,
+          price_variance,
+          reference_total,
+          variance_total,
+        ]
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        item_code:
+          type: [string, 'null']
+        description:
+          type: string
+        unit:
+          type: string
+        quantity:
+          type: string
+          example: '10.0000'
+        unit_cost:
+          type: string
+          example: '2700.0000'
+        estimated_total:
+          type: string
+          example: '27000.0000'
+        currency_code:
+          type: string
+          example: THB
+        central_price_id:
+          type: [string, 'null']
+          format: uuid
+        reference_price:
+          type: [string, 'null']
+          example: '2600.0000'
+        price_variance:
+          type: [string, 'null']
+          example: '100.0000'
+        reference_total:
+          type: [string, 'null']
+          description: ROUND(quantity × reference_price, 4) HALF_UP; NULL when unlinked
+          example: '26000.0000'
+        variance_total:
+          type: [string, 'null']
+          description: estimated_total − reference_total; NULL when unlinked
+          example: '1000.0000'
+
+    PriceVarianceReport:
+      type: object
+      required:
+        [project_id, version_id, version_number, version_status, currency_code, items, totals]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        version_id:
+          type: string
+          format: uuid
+        version_number:
+          type: integer
+          minimum: 1
+        version_status:
+          type: string
+          enum: [DRAFT, APPROVED, SUPERSEDED]
+        currency_code:
+          type: string
+          example: THB
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriceVarianceItem'
+        totals:
+          type: object
+          required:
+            [
+              items,
+              items_with_reference,
+              estimated_total,
+              referenced_estimated_total,
+              reference_total,
+              variance_total,
+            ]
+          properties:
+            items:
+              type: integer
+            items_with_reference:
+              type: integer
+            estimated_total:
+              type: string
+              description: Every item
+              example: '29880.0000'
+            referenced_estimated_total:
+              type: string
+              description: Linked items only
+              example: '29875.0000'
+            reference_total:
+              type: string
+              example: '28875.0000'
+            variance_total:
+              type: string
+              example: '1000.0000'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, traceId, timestamp]
+          properties:
+            code:
+              type: string
+              example: COS-BOQ-001
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+    UpdateBoqItemDto:
+      type: object
+      properties:
+        description:
+          type: string
+          maxLength: 5000
+        unit:
+          type: string
+          maxLength: 50
+        quantity:
+          type: string
+          pattern: '^\d{1,19}(\.\d{1,4})?$'
+        unit_cost:
+          type: string
+          pattern: '^\d{1,19}(\.\d{1,4})?$'
+        sort_order:
+          type: integer
+          minimum: 0
+        use_central_price:
+          type: boolean
+          description: |
+            ADR-061 Mode B — set unit_cost to the ACTIVE central price for the item's item_code and re-take
+            the reference snapshot. Must not be sent with unit_cost.
+
+  responses:
+    BadRequest:
+      description: Validation failed, or unit_cost sent with use_central_price (COS-CPRICE-007)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Conflict — e.g. DRAFT version already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Operation forbidden — version is not DRAFT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: Business rule violation — incl. COS-CPRICE-006, no usable central price for use_central_price
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

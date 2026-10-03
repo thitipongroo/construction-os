@@ -1,0 +1,166 @@
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TerminusModule } from '@nestjs/terminus';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ClsModule } from 'nestjs-cls';
+import { HealthController } from './health.controller';
+import { IdentityModule } from './modules/identity/identity.module';
+import { LastSeenModule } from './shared/last-seen/last-seen.module';
+import { TenantModule } from './modules/tenant/tenant.module';
+import { ProjectModule } from './modules/project/project.module';
+import { BoqModule } from './modules/boq/boq.module';
+import { CentralPricesModule } from './modules/central-prices/central-prices.module';
+import { ProcurementModule } from './modules/procurement/procurement.module';
+import { FinanceModule } from './modules/finance/finance.module';
+import { SiteOpsModule } from './modules/site-ops/site-ops.module';
+import { SearchModule } from './modules/search/search.module';
+import { AiProxyModule } from './modules/ai-proxy/ai-proxy.module';
+import { FilesModule } from './modules/files/files.module';
+import { TasksModule } from './modules/tasks/tasks.module';
+import { SafetyModule } from './modules/safety/safety.module';
+import { GeoModule } from './modules/geo/geo.module';
+import { CrmModule } from './modules/crm/crm.module';
+import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { PlatformWebhookModule } from './modules/platform-webhook/platform-webhook.module';
+import { PlatformSettingsModule } from './modules/platform-settings/platform-settings.module';
+import { MasterDataModule } from './modules/master-data/master-data.module';
+import { GraphModule } from './modules/graph/graph.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { ComplianceModule } from './modules/compliance/compliance.module';
+import { WorkforceModule } from './modules/workforce/workforce.module';
+import { SyncModule } from './modules/sync/sync.module';
+import { CredentialsModule } from './modules/credentials/credentials.module';
+import { EquipmentModule } from './modules/equipment/equipment.module';
+import { FeatureFlagsModule } from './shared/feature-flags/feature-flags.module';
+import { FeatureFlagGuard } from './shared/feature-flags/feature-flag.guard';
+import { AuditInterceptor } from './shared/interceptors/audit.interceptor';
+import { HttpMetricsInterceptor } from './shared/interceptors/http-metrics.interceptor';
+import { RequestIdInterceptor } from './shared/interceptors/request-id.interceptor';
+import { TenantContextInterceptor } from './shared/interceptors/tenant-context.interceptor';
+import { CloudflareWafMiddleware } from './shared/middleware/cloudflare-waf.middleware';
+import { UnmatchedRouteMetricsMiddleware } from './shared/middleware/unmatched-route-metrics.middleware';
+import { SecureHeadersMiddleware } from './shared/middleware/secure-headers.middleware';
+import { TracingShutdownService } from './shared/tracing-shutdown.service';
+import { PrismaPoolShutdownService } from './shared/prisma/prisma-pool-shutdown.service';
+import { KafkaLagService } from './shared/kafka/kafka-lag.service';
+import { SchedulingModule } from './shared/scheduling/scheduling.module';
+import { EventsModule } from './shared/events/events.module';
+import { ServiceAuthModule } from './shared/auth/auth.module';
+
+@Module({
+  imports: [
+    // Two-file env scheme (spec §08): the only .env is the monorepo ROOT one. Under turbo the backend
+    // runs with cwd = backend/, so ../.env is the root file; '.env' covers a run from the repo root.
+    // In docker the env is injected via docker-compose env_file (root .env), so neither path exists
+    // in the container and ConfigModule falls back to process.env — which is already populated.
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['../.env', '.env'] }),
+    // Global CLS (AsyncLocalStorage) — carries authenticated tenant context across guards,
+    // interceptors and (formerly request-scoped) providers. Under Fastify, Passport's req.user does
+    // NOT survive into downstream handlers (Fastify clones the request), so JwtAuthGuard publishes the
+    // tenant context into CLS and TenantPrismaService reads it from there. `mount` wraps every request
+    // in cls.run() before guards run, so values set in the guard persist through the whole pipeline.
+    // useEnterWith: true is required under Fastify — Fastify's middleware does not await the rest of
+    // the request inside the cls.run() callback, so the context must be entered via als.enterWith().
+    ClsModule.forRoot({ global: true, middleware: { mount: true, useEnterWith: true } }),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        throttlers: [{ ttl: 60000, limit: 100 }],
+        // Storage adapter swapped 2026-08-24 from `nestjs-throttler-storage-redis`, which its author
+        // ARCHIVED in September 2024. That package was written against throttler v5: its
+        // `increment(key, ttl)` takes two arguments where v6 calls
+        // `increment(key, ttl, limit, blockDuration, throttlerName)`, and its Lua returns only
+        // `{totalHits, timeToExpire}`. ThrottlerGuard decides with `if (isBlocked)`, so an undefined
+        // field meant the guard NEVER blocked — application-layer rate limiting was silently off
+        // while Redis kept counting and every endpoint answered 200. Proven: 115 requests to a
+        // 100/min route produced no 429 at all.
+        //
+        // `@nest-lab/throttler-storage-redis` is the ioredis-based provider the official throttler
+        // README lists, and its increment carries the full v6 signature and record. ioredis matters:
+        // the rest of this codebase already uses it, and the node-redis alternative would put two
+        // Redis client libraries in one runtime.
+        //
+        // Pass the URL (not a pre-built Redis): the service then OWNS the client and closes it in
+        // its own onModuleDestroy (disconnectRequired=true). Passing a Redis instance leaves that
+        // flag falsy, so the socket leaks past app.close() and hangs Jest — this package keeps the
+        // same behaviour.
+        storage: new ThrottlerStorageRedisService(cfg.getOrThrow<string>('REDIS_URL')),
+      }),
+    }),
+    TerminusModule,
+    FeatureFlagsModule, // QM-15 / ADR-049 — Unleash-backed flags + GET /api/v1/flags
+    LastSeenModule, // @Global — last_seen_at touch used by JwtAuthGuard in every module (User Audit)
+    SchedulingModule, // @Global — leader election for @Cron jobs, so they run on ONE replica not all
+    EventsModule, // @Global — durable event outbox + its poller (replaces per-request Kafka producers)
+    ServiceAuthModule, // @Global — OQ-46: the backend's client-credentials token for internal calls
+
+    IdentityModule,
+    TenantModule,
+    ProjectModule,
+    BoqModule,
+    CentralPricesModule, // ADR-061 — ราคากลาง catalog: SYSTEM_ADMIN import/sync, tenant read, BOQ reference
+    ProcurementModule,
+    FinanceModule,
+    SiteOpsModule,
+    SearchModule, // OQ-22 — OpenSearch index writes, off the request path and onto the outbox
+    AiProxyModule, // OQ-46 — /api/v1/ai and /api/v1/rag reach the AI Gateway through here, not Kong
+    FilesModule, // Photo annotations — GET endpoint; write path via SyncModule (ADR-056)
+    TasksModule,
+    SafetyModule,
+    GeoModule,
+    CrmModule,
+    VendorPortalModule,
+    NotificationModule,
+    PlatformWebhookModule,
+    PlatformSettingsModule, // ADR-108 — SYSTEM_ADMIN platform settings, stored only (nothing reads them)
+    MasterDataModule,
+    GraphModule,
+    AnalyticsModule,
+    ComplianceModule,
+    WorkforceModule, // Phase 22 — now wired (required for self check-in /workers/me, option A)
+    SyncModule, // Finding 2 — generic offline sync API (/sync/delta, /sync/push, /sync/resolve)
+    CredentialsModule, // ADR-019 — REST client for the CredentialService (W3C DID/VC) microservice
+    EquipmentModule, // Phase 21 — equipment tracking, assignments, maintenance, utilization
+    // Phase 8: (Kafka/event infra wired into all modules)
+    // Phase 9: (FileService is a separate deployable)
+  ],
+  controllers: [HealthController],
+  providers: [
+    // Global rate limiting guard — ThrottlerModule handles limits; Redis storage shared across replicas
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Feature-flag kill switch — only gates routes carrying @FeatureFlag metadata (QM-15; ADR-049)
+    { provide: APP_GUARD, useClass: FeatureFlagGuard },
+    // RequestIdInterceptor must be first — sets request.requestId before AuditInterceptor runs
+    { provide: APP_INTERCEPTOR, useClass: RequestIdInterceptor },
+    // Projects req.user (set by JwtAuthGuard) onto req.tenantId/tenantCode/userId/userRole
+    // before the route handler runs. Must precede AuditInterceptor (which reads tenant context).
+    { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
+    // HTTP metrics — records http_request_duration_seconds and http_requests_total (Phase 15)
+    { provide: APP_INTERCEPTOR, useClass: HttpMetricsInterceptor },
+    // Global audit interceptor — logs all mutating operations (QM-4, Phase 16 RLS)
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    // Closes the OpenTelemetry SDK (Prometheus exporter) on graceful shutdown (enableShutdownHooks)
+    TracingShutdownService,
+    // Ends the shared pg pools that back every PrismaClient. No individual client may close them
+    // (they are shared by URL — see shared/prisma/create-prisma-client.ts), so this hook owns it.
+    PrismaPoolShutdownService,
+    // Publishes kafka_consumer_lag and kafka_dlq_depth. Both series back a paging alert in
+    // cos-alerts.yml and neither had a producer — an alert on an absent series never fires
+    // (TDD OQ-43). Registered here because it must run once per process, not per module.
+    KafkaLagService,
+  ],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(SecureHeadersMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+    consumer.apply(CloudflareWafMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+    // Counts requests that reach NO route — a global interceptor never sees those, so without this
+    // a flood of 404s is invisible in http_requests_total (master:4357).
+    consumer
+      .apply(UnmatchedRouteMetricsMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}

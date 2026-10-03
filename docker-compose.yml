@@ -1,0 +1,1018 @@
+# Construction OS — Local Development Stack
+#
+# Three tiers (to fit lower-memory machines):
+#   make docker-up        → essential infra only (postgres, pgbouncer, redis, kafka,
+#                           schema-registry, minio) — ~1 GB, enough to boot the app.
+#   make docker-up-full   → all infra, incl. the `full` profile (opensearch, neo4j,
+#                           clickhouse, clamav, keycloak, vault, temporal, UIs) — ~4 GB.
+#   make docker-apps-up-full → full infra + the `apps` profile (backend + file-service +
+#                           ai-gateway/embedding/ocr + analytics/kg workers), all in
+#                           containers. Satisfies "all services start with Docker Compose"
+#                           (see docs/architecture/adr/036-compose-profiles-local-app-services.md).
+#                           The fast day-to-day inner loop is still `make dev` (turbo on host);
+#                           the apps profile is for parity / full-stack-in-Docker.
+#
+# Services tagged `profiles: ['full']` start only with the full profile; `profiles: ['apps']`
+# start only with the apps profile. App services depend on heavy infra in the `full` profile,
+# so the apps tier enables BOTH profiles: `docker compose --profile full --profile apps up`.
+
+name: construction-os
+
+volumes:
+  postgres_data:
+  nominatim_data:
+  redis_data:
+  kafka_data:
+  opensearch_data:
+  neo4j_data:
+  clickhouse_data:
+  minio_data:
+  vault_data:
+  pgbouncer_config:
+  keycloak_data:
+  emqx_data:
+
+networks:
+  cos-network:
+    driver: bridge
+
+services:
+  # ─── PostgreSQL 18 + TimescaleDB 2.x ─────────────────────────────────────
+  postgres:
+    image: timescale/timescaledb:latest-pg18
+    container_name: cos-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cos_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-construction_os}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      # PG18+ Docker images store data in a major-version subdirectory and expect the mount at
+      # /var/lib/postgresql (not /var/lib/postgresql/data) — docker-library/postgres#1259.
+      - postgres_data:/var/lib/postgresql
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-cos} -d ${POSTGRES_DB:-construction_os}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cos-network
+
+  # ─── PgBouncer (connection pooler — QM-18) ───────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    container_name: cos-pgbouncer
+    environment:
+      DB_USER: ${POSTGRES_USER:-cos}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-cos_dev_password}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+      SERVER_IDLE_TIMEOUT: 600
+      ADMIN_USERS: ${POSTGRES_USER:-cos}
+      # PostgreSQL 16 stores SCRAM-SHA-256 verifiers; PgBouncer must use scram + a plaintext
+      # userlist (mounted below) to auth to the server. Without this the image's auto-generated
+      # md5 userlist fails server login with "wrong password type".
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - '${PGBOUNCER_PORT:-6432}:5432'
+    volumes:
+      - ./infrastructure/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cos-network
+
+  # ─── Redis 7 ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:8-alpine
+    container_name: cos-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-cos_redis_password}
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--pass', '${REDIS_PASSWORD:-cos_redis_password}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cos-network
+
+  # ─── EMQX (MQTT 5.0 broker for IoT telemetry — Phase 24, §33.3) ──────────
+  # Open-source edition (Apache-2.0). IoT devices publish to cos/v1/devices/{id}/telemetry; the
+  # iot-ingestion-worker subscribes and bridges to Kafka. `full` profile — only needed for the
+  # Digital Twin write path, not core local dev.
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: cos-emqx
+    profiles: ['full']
+    ports:
+      - '${MQTT_PORT:-1883}:1883' # MQTT
+      - '${EMQX_DASHBOARD_PORT:-18083}:18083' # dashboard
+    volumes:
+      - emqx_data:/opt/emqx/data
+    healthcheck:
+      test: ['CMD', '/opt/emqx/bin/emqx', 'ctl', 'status']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cos-network
+
+  # ─── Apache Kafka 3.x (KRaft mode — no ZooKeeper) ────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:8.3.0
+    container_name: cos-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # 168h = the 7 days master:3103 states. It carries no dev/prod split, unlike the broker
+      # count and replication factor two lines above it, so the one value applies here too.
+      # The previous 2160 (90 days) arrived with the file's first commit and was never
+      # justified; nothing replays from the beginning (every consumer sets fromBeginning:
+      # false), so the only thing the extra 83 days bought was disk.
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: -1
+      # false on EVERY real broker (master:3093-3095): topics are created explicitly, by
+      # KafkaProducer.ensureTopic on first publish and by the DLQ publisher on first failure.
+      # Left on, a wrong tenant prefix or a stale .vN silently produced into a brand-new topic
+      # nothing consumes — a bug that looks like "the consumer never fired" and reproduces
+      # nowhere, because production has always had this false and rejects the publish outright.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: h-CJFTy_TE2EQva8gyOGJA
+    ports:
+      - '${KAFKA_PORT:-29092}:29092'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ['CMD-SHELL', 'kafka-broker-api-versions --bootstrap-server localhost:9092']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - cos-network
+
+  # ─── Confluent Schema Registry ────────────────────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.3.0
+    container_name: cos-schema-registry
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD_TRANSITIVE
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - '${SCHEMA_REGISTRY_PORT:-8081}:8081'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      # Confluent Platform 8 slimmed the image and dropped curl/wget/nc — use a bash /dev/tcp probe.
+      test:
+        [
+          'CMD',
+          'bash',
+          '-c',
+          "exec 3<>/dev/tcp/localhost/8081; printf 'GET /subjects HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; head -n1 <&3 | grep -q 200",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - cos-network
+
+  # ─── OpenSearch 2.x (full-text + vector search) ───────────────────────────
+  opensearch:
+    image: opensearchproject/opensearch:3.7.0
+    container_name: cos-opensearch
+    profiles: ['full']
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_PASSWORD:-Cos_Os_Dev_2024!}
+      plugins.security.disabled: 'true'
+      OPENSEARCH_JAVA_OPTS: '-Xms512m -Xmx512m'
+    ports:
+      - '${OPENSEARCH_PORT:-9200}:9200'
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - cos-network
+
+  # ─── Neo4j 5.x (Knowledge Graph) ─────────────────────────────────────────
+  neo4j:
+    image: neo4j:2026.05.0-community-ubi10
+    container_name: cos-neo4j
+    profiles: ['full']
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-cos_neo4j_password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+    ports:
+      - '${NEO4J_BOLT_PORT:-7687}:7687'
+      - '${NEO4J_HTTP_PORT:-7474}:7474'
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -O /dev/null -q http://localhost:7474 || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - cos-network
+
+  # ─── ClickHouse 24.x (Analytics OLAP) ────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    container_name: cos-clickhouse
+    profiles: ['full']
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-cos}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-cos_ch_password}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - '${CLICKHOUSE_HTTP_PORT:-8123}:8123'
+      - '${CLICKHOUSE_NATIVE_PORT:-9000}:9000'
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      # Mount the single profile-settings file (not the whole users.d dir) read-only, so the
+      # ClickHouse entrypoint can still write its generated default-user.xml into users.d when
+      # CLICKHOUSE_USER is set — a `:ro` mount of the directory makes that write fail (read-only fs).
+      - ./infrastructure/clickhouse/users.d/analytics.xml:/etc/clickhouse-server/users.d/analytics.xml:ro
+      - ./infrastructure/clickhouse/initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "clickhouse-client --password ${CLICKHOUSE_PASSWORD:-cos_ch_password} --query 'SELECT 1'",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - cos-network
+
+  # ─── MinIO (S3-compatible object storage) ─────────────────────────────────
+  minio:
+    # quay.io, not Docker Hub: hub.docker.com's minio/minio repository returns 404 (measured 2026-09-14); quay.io serves the same tag.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: cos-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cos_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cos_minio_password}
+    ports:
+      - '${MINIO_PORT:-9100}:9000'
+      - '${MINIO_CONSOLE_PORT:-9101}:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - cos-network
+
+  # ─── ClamAV (antivirus scanning — Phase 9 File Service) ──────────────────
+  clamav:
+    image: clamav/clamav:1.5
+    container_name: cos-clamav
+    # clamav/clamav:stable publishes no linux/arm64 manifest — run the amd64
+    # image under emulation (Rosetta) on Apple Silicon hosts.
+    platform: linux/amd64
+    profiles: ['full']
+    ports:
+      - '${CLAMAV_PORT:-3310}:3310'
+    healthcheck:
+      test: ['CMD-SHELL', 'clamdscan --ping 3 || exit 1']
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s # ClamAV needs time to load virus definitions on first start
+    networks:
+      - cos-network
+
+  # ─── HashiCorp Vault (dev mode — local secret injection) ──────────────────
+  vault:
+    image: hashicorp/vault:1.21
+    container_name: cos-vault
+    profiles: ['full']
+    command: vault server -dev -dev-root-token-id=${VAULT_DEV_ROOT_TOKEN:-cos-vault-root-token}
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-cos-vault-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://0.0.0.0:8200
+    ports:
+      - '${VAULT_PORT:-8200}:8200'
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_data:/vault/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "vault status -address=http://localhost:8200 | grep -q 'Initialized' || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cos-network
+
+  # ─── Temporal (Workflow Engine) ────────────────────────────────────────────
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    container_name: cos-temporal
+    profiles: ['full']
+    environment:
+      # temporalio/auto-setup 1.24.0 config template only has datastore branches for
+      # cassandra / mysql8 / postgres12 / postgres12_pgx — "postgresql" matches none, so the
+      # "default" datastore is never emitted ("missing config for datastore default"). Use postgres12.
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-cos}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-cos_dev_password}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig/development.yaml
+    ports:
+      - '${TEMPORAL_PORT:-7233}:7233'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./infrastructure/temporal/dynamicconfig:/etc/temporal/dynamicconfig:ro
+    networks:
+      - cos-network
+
+  temporal-ui:
+    image: temporalio/ui:2.51.1
+    container_name: cos-temporal-ui
+    profiles: ['full']
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - '${TEMPORAL_UI_PORT:-8088}:8080'
+    depends_on:
+      - temporal
+    networks:
+      - cos-network
+
+  # ─── Keycloak 24.x — Identity Provider (Phase 2) ─────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.4
+    container_name: cos-keycloak
+    profiles: ['full']
+    command: start-dev --import-realm
+    environment:
+      # Keycloak 26 renamed the initial-admin bootstrap vars to KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD
+      # (the Keycloak 24 KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD are removed). Only used on first init;
+      # Keycloak 26 runs Liquibase to migrate the existing realm schema on startup.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-cos_keycloak_admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-construction_os}
+      KC_DB_USERNAME: ${POSTGRES_USER:-cos}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-cos_dev_password}
+      KC_DB_SCHEMA: keycloak
+      KC_HTTP_ENABLED: 'true'
+      KC_HOSTNAME_STRICT: 'false'
+      KC_LOG_LEVEL: warn
+      # Expose /health, /health/ready, /health/live on the main HTTP port (8080) for the
+      # healthcheck below. Keycloak 24 serves health on 8080 (the dedicated management port
+      # is a Keycloak 25+ default). Without this the endpoints 404.
+      KC_HEALTH_ENABLED: 'true'
+    ports:
+      - '${KEYCLOAK_PORT:-8090}:8080'
+    volumes:
+      # Keycloak 26 requires the import filename to match the realm name (`<realm>-realm.json`). The
+      # source file keeps its name (backend/provision reference it) but mounts as the KC26-correct name.
+      - ./infrastructure/keycloak/realms/construction-os-realm.json:/opt/keycloak/data/import/construction-os-dev-realm.json:ro
+      # Custom "cos" login theme (Path B, §20.6.1 / mockup web/03). start-dev disables theme caching,
+      # so edits under this dir are picked up on container restart without an image rebuild.
+      - ./infrastructure/keycloak/themes:/opt/keycloak/themes:ro
+      - keycloak_data:/opt/keycloak/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The Keycloak 24 distroless image ships no curl/wget, but its /bin/sh supports /dev/tcp.
+      # Open a socket to the health endpoint and assert an HTTP 200 status line (200 = ready,
+      # 503 = not ready) — status-line check is independent of the JSON body formatting.
+      test:
+        [
+          'CMD-SHELL',
+          "exec 3<>/dev/tcp/localhost/9000; printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; head -n1 <&3 | grep -q '200'",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - cos-network
+
+  # ─── MailHog — dev SMTP catcher (admin password-reset emails, §14) ─────────
+  # Keycloak sends UPDATE_PASSWORD action-token emails here (realm smtpServer host=mailhog:1025). Nothing
+  # leaves the host — read the messages at the web UI on :8025. Dev only; production uses a real SMTP relay.
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: cos-mailhog
+    profiles: ['full']
+    ports:
+      - '${MAILHOG_SMTP_PORT:-1025}:1025'
+      - '${MAILHOG_UI_PORT:-8025}:8025'
+    networks:
+      - cos-network
+
+  # ─── Kafka UI (dev convenience) ───────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: cos-kafka-ui
+    profiles: ['full']
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    ports:
+      - '${KAFKA_UI_PORT:-8080}:8080'
+    depends_on:
+      - kafka
+      - schema-registry
+    networks:
+      - cos-network
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Application services — profile: apps (ADR-036)
+  #
+  # Run with full infra co-enabled:  docker compose --profile full --profile apps up
+  # (or `make docker-apps-up-full`). Each service reuses its production Dockerfile, inherits the dev
+  # `.env` (required:false), and overrides only hostname-bearing vars to service-DNS so the
+  # app connects to containers (pgbouncer/kafka/redis/... ) instead of localhost. The fast
+  # day-to-day loop is still `make dev` (turbo on host); this tier is for parity.
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ─── Backend (NestJS modular monolith) ───────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cos-backend
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: '3000'
+      # The internal listener (ADR-107) — only for file-service, credential-service and ai-gateway on this
+      # network. Deliberately NOT in `ports:`: nothing on the host needs it.
+      INTERNAL_PORT: '3100'
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # App connects via PgBouncer (QM-18) — never directly to postgres:5432
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cos}:${POSTGRES_PASSWORD:-cos_dev_password}@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # Tenant-scoped non-superuser role (app_user — LOGIN+password set by migration
+      # 20260623000001_app_user_login_and_grants) so PostgreSQL RLS is enforced (ADR-031)
+      APP_DATABASE_URL: postgresql://app_user:app_user_dev_password@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # Prisma migrations connect DIRECT (non-pooled) — postgres, not pgbouncer (QM-9 / schema.prisma directUrl)
+      DIRECT_DATABASE_URL: postgresql://${POSTGRES_USER:-cos}:${POSTGRES_PASSWORD:-cos_dev_password}@postgres:5432/${POSTGRES_DB:-construction_os}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cos_redis_password}@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      TEMPORAL_ADDRESS: temporal:7233
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-construction-os-dev}
+      # Token `iss` reflects Keycloak's browser-facing URL (localhost:8090); JWKS is still
+      # fetched from the internal KEYCLOAK_URL. Without this the backend 401s browser tokens.
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8090/realms/construction-os-dev}
+      OPENSEARCH_URL: http://opensearch:9200
+      # /api/v1/ai and /api/v1/rag are proxied by the backend, not by Kong (TDD OQ-46) — the Kong
+      # config that used to carry that route is applied by nothing.
+      AI_GATEWAY_URL: http://ai-gateway:8000
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-cos_neo4j_password}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-cos}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-cos_ch_password}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
+      OTEL_SERVICE_NAME: cos-backend
+    ports:
+      - '${PORT:-3000}:3000'
+    depends_on:
+      postgres: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      schema-registry: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      temporal: { condition: service_started }
+    healthcheck:
+      # 127.0.0.1 (not localhost): the app listens on IPv4 0.0.0.0; localhost resolves to IPv6 ::1
+      # inside the container (/etc/hosts), which is refused.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/api/v1/health/live || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    develop:
+      watch:
+        - path: ./backend/src
+          action: rebuild
+        - path: ./backend/package.json
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── File Service (Fastify) ───────────────────────────────────────────────
+  # ─── Temporal worker (procurement · enterprise-provisioning · data-export) ──
+  # Same image as `backend`, different command. Added 2026-08-22: before this nothing started a
+  # Temporal worker anywhere, so locally — exactly as in production — an RFQ publish returned 200 and
+  # the RFQ stayed DRAFT. Without this service `make docker-apps-up-full` brings up a Temporal server
+  # that no process polls.
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cos-temporal-worker
+    profiles: ['apps']
+    command: ['node', 'backend/dist/workers/main']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      WORKER_HEALTH_PORT: '8090'
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # App connects via PgBouncer (QM-18) — never directly to postgres:5432
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cos}:${POSTGRES_PASSWORD:-cos_dev_password}@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # Tenant-scoped non-superuser role (app_user — LOGIN+password set by migration
+      # 20260623000001_app_user_login_and_grants) so PostgreSQL RLS is enforced (ADR-031)
+      APP_DATABASE_URL: postgresql://app_user:app_user_dev_password@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # Prisma migrations connect DIRECT (non-pooled) — postgres, not pgbouncer (QM-9 / schema.prisma directUrl)
+      DIRECT_DATABASE_URL: postgresql://${POSTGRES_USER:-cos}:${POSTGRES_PASSWORD:-cos_dev_password}@postgres:5432/${POSTGRES_DB:-construction_os}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cos_redis_password}@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      TEMPORAL_ADDRESS: temporal:7233
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-construction-os-dev}
+      # Token `iss` reflects Keycloak's browser-facing URL (localhost:8090); JWKS is still
+      # fetched from the internal KEYCLOAK_URL. Without this the backend 401s browser tokens.
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8090/realms/construction-os-dev}
+      OPENSEARCH_URL: http://opensearch:9200
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-cos_neo4j_password}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-cos}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-cos_ch_password}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
+      OTEL_SERVICE_NAME: temporal-worker
+    depends_on:
+      postgres: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      schema-registry: { condition: service_healthy }
+      temporal: { condition: service_started }
+    healthcheck:
+      # 127.0.0.1, not localhost — the health server listens on IPv4 and localhost resolves to ::1
+      # inside the container, which is refused. Same reason as the backend service above.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8090/health/live || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  file-service:
+    build:
+      context: .
+      dockerfile: services/file-service/Dockerfile
+    container_name: cos-file-service
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      FILE_SERVICE_PORT: '3002'
+      # The backend, for a user's verified identity (ADR-107). No default in code: unset = 503.
+      BACKEND_INTERNAL_URL: http://backend:3100
+      # Names the service in logs/traces and on the Prometheus scrape endpoint (:9464, opened by
+      # initTracing in main.ts — the port prometheus.yml has always scraped).
+      OTEL_SERVICE_NAME: file-service
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cos}:${POSTGRES_PASSWORD:-cos_dev_password}@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      KAFKA_BROKERS: kafka:9092
+      TEMPORAL_ADDRESS: temporal:7233
+      # MinIO listens on 9000 INSIDE the network (host maps 9100→9000)
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: '9000'
+      MINIO_USE_SSL: 'false'
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cos_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cos_minio_password}
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: '3310'
+      OPENSEARCH_HOST: http://opensearch:9200
+    ports:
+      - '${FILE_SERVICE_PORT:-3002}:3002'
+    depends_on:
+      postgres: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+      kafka: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      temporal: { condition: service_started }
+      # ClamAV needs ~120s to load virus defs; file-service scans lazily on upload, so do not block on healthy
+      clamav: { condition: service_started }
+    healthcheck:
+      # 127.0.0.1 (not localhost) — see backend healthcheck note (IPv6 ::1 refused).
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3002/health/live || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    develop:
+      watch:
+        - path: ./services/file-service/src
+          action: rebuild
+        - path: ./services/file-service/package.json
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── AI Gateway (FastAPI) ─────────────────────────────────────────────────
+  # ─── CredentialService (W3C DID/VC — ADR-019) ─────────────────────────────
+  credential-service:
+    build:
+      context: .
+      dockerfile: services/credential-service/Dockerfile
+    container_name: cos-credential-service
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: '3009'
+      # The backend, for a user's verified identity (ADR-107). No default in code: unset = 503.
+      BACKEND_INTERNAL_URL: http://backend:3100
+      # Names the service in every structured log line (src/logger.ts); without it logs claim
+      # "cos-backend", the default inherited from @cos/logger's configuration.
+      OTEL_SERVICE_NAME: credential-service
+      # MUST be the non-superuser app_user role: every credentials.* table is protected only by RLS
+      # (SET LOCAL app.current_tenant_id), and a superuser bypasses RLS entirely — connecting as `cos`
+      # would silently remove cross-tenant isolation. Same role the backend uses via APP_DATABASE_URL.
+      DATABASE_URL: postgresql://app_user:app_user_dev_password@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # Baked into every tenant DID (did:web:{domain}:tenants:{id}) and into every VC issued, so a
+      # deployed environment MUST set the real domain (Helm values do; see .env.example). The local
+      # default only keeps `docker compose config` working — did:web mandates HTTPS, so DIDs minted
+      # against it are unresolvable by design and stay throwaway.
+      DID_WEB_BASE_DOMAIN: ${DID_WEB_BASE_DOMAIN:-credentials.localhost}
+      # Encrypts the issuer Ed25519 private key at rest (AES-256-GCM, ADR-035). The service falls back
+      # to a fixed dev key when unset outside production — never do that in a deployed environment.
+      APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY:-}
+    ports:
+      - '${CREDENTIAL_SERVICE_PORT:-3009}:3009'
+    depends_on:
+      postgres: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+    healthcheck:
+      # 127.0.0.1 (not localhost) — see backend healthcheck note (IPv6 ::1 refused).
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3009/health || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    develop:
+      watch:
+        - path: ./services/credential-service/src
+          action: rebuild
+        - path: ./services/credential-service/package.json
+          action: rebuild
+    networks:
+      - cos-network
+
+  ai-gateway:
+    build:
+      # Root context: the image bakes in repo-root ai/prompts (see the Dockerfile header). The
+      # PROMPTS_DIR env + bind mount below are now a dev convenience — edit a prompt and restart
+      # without rebuilding — not the thing that makes the service start.
+      context: .
+      dockerfile: services/ai-gateway/Dockerfile
+    container_name: cos-ai-gateway
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cos_redis_password}@redis:6379
+      OTEL_SERVICE_NAME: ai-gateway
+      # Delay-risk context assembly (F4b B). Routed through PgBouncer like every other app
+      # service — QM-18: "never directly to PostgreSQL port 5432". This was the last service
+      # still pointing at postgres:5432 (found by tests/spec-derived/phase-01-foundation).
+      # Connects as the NON-SUPERUSER app_user, so PostgreSQL RLS actually applies (ADR-031).
+      # It used to connect as the owner role `cos`, which is a superuser and therefore bypasses
+      # RLS outright; the app-layer `WHERE tenant_id` filter was carrying isolation on its own,
+      # which master §Never forbids ("secondary defence-in-depth, not a replacement for RLS").
+      # Every ai-gateway query now runs through db/tenant_scope.py, which sets
+      # app.current_tenant_id inside the statement's own transaction — required because the
+      # policy is `TO app_user ... USING (tenant_id = NULLIF(current_setting(...), '')::uuid)`.
+      # Unset → _wire_db leaves the pool None and delay-risk falls back to an empty context.
+      DATABASE_URL: postgresql://app_user:app_user_dev_password@pgbouncer:5432/${POSTGRES_DB:-construction_os}
+      # OpenWeather key for the delay-risk weather input (degrades to no weather when unset).
+      WEATHER_API_KEY: ${WEATHER_API_KEY:-}
+      # Keycloak, reachable FROM THIS CONTAINER. `auth.py` builds the JWKS URL from KEYCLOAK_URL and
+      # verifies every bearer token against it; `.env` sets that to http://127.0.0.1:8090, which is
+      # right for the backend on the host and is this container talking to itself. The fetch failed,
+      # so the gateway answered 401 to every proxied call — and the mobile client reads a 401 as an
+      # expired session, so an executive was signed out three seconds after landing on Home.
+      # Kafka, Redis and Postgres above were already overridden to their in-network names; this was
+      # the one that was missed.
+      # KEYCLOAK_ISSUER is deliberately NOT overridden: the token's `iss` is Keycloak's PUBLIC URL
+      # and must keep matching it. Only the URL the keys are fetched from changes — the split-horizon
+      # case auth.py documents at _ISSUER.
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-construction-os-dev}
+      # The backend, for a user's verified identity (ADR-107). No default in code: unset = 503.
+      BACKEND_INTERNAL_URL: http://backend:3100
+      # Internal transcription pipeline the gateway delegates /api/v1/ai/transcribe to.
+      TRANSCRIPTION_SERVICE_URL: http://ai-transcription-pipeline:8000
+      # Prompt templates live at repo-root ai/prompts (not inside the service build context),
+      # mounted read-only below. loader.py reads this env (falls back to an upward search on host).
+      PROMPTS_DIR: /app/ai/prompts
+    ports:
+      - '${AI_GATEWAY_PORT:-8000}:8000'
+    volumes:
+      - ./ai/prompts:/app/ai/prompts:ro
+    depends_on:
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    develop:
+      watch:
+        - path: ./services/ai-gateway
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── AI Embedding Worker (FastAPI) ────────────────────────────────────────
+  ai-embedding-worker:
+    build:
+      # Root context: requirements.txt installs the shared ../../libs/python/cosmetrics (ADR-021),
+      # which a service-scoped context cannot reach.
+      context: .
+      dockerfile: services/ai-embedding-worker/Dockerfile
+    container_name: cos-ai-embedding-worker
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OTEL_SERVICE_NAME: ai-embedding-worker
+    ports:
+      - '${AI_EMBEDDING_PORT:-8001}:8000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    develop:
+      watch:
+        - path: ./services/ai-embedding-worker
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── AI OCR Pipeline (FastAPI) ────────────────────────────────────────────
+  ai-ocr-pipeline:
+    build:
+      # Root context: requirements.txt installs the shared ../../libs/python/cosmetrics (ADR-021),
+      # which a service-scoped context cannot reach.
+      context: .
+      dockerfile: services/ai-ocr-pipeline/Dockerfile
+    container_name: cos-ai-ocr-pipeline
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FILE_SERVICE_URL: http://file-service:3002
+      OTEL_SERVICE_NAME: ai-ocr-pipeline
+    ports:
+      - '${AI_OCR_PORT:-8002}:8000'
+    depends_on:
+      file-service: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    develop:
+      watch:
+        - path: ./services/ai-ocr-pipeline
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── AI Transcription Pipeline (FastAPI) — internal; ai-gateway is the client entry ───
+  ai-transcription-pipeline:
+    build:
+      # Root context: requirements.txt installs the shared ../../libs/python/cosmetrics (ADR-021),
+      # which a service-scoped context cannot reach.
+      context: .
+      dockerfile: services/ai-transcription-pipeline/Dockerfile
+    container_name: cos-ai-transcription-pipeline
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FILE_SERVICE_URL: http://file-service:3002
+      OTEL_SERVICE_NAME: ai-transcription-pipeline
+      # STT_PROVIDER=faster_whisper enables the self-host model (weights baked into the deploy
+      # image); defaults to the stub provider (HTTP 503) until then.
+    ports:
+      - '${AI_TRANSCRIPTION_PORT:-8003}:8000'
+    depends_on:
+      file-service: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    develop:
+      watch:
+        - path: ./services/ai-transcription-pipeline
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── Nominatim (self-host reverse-geocode) — Geofabrik Thailand extract ───
+  # Heavy one-time OSM import (address-only style keeps it lighter); gated behind the 'full'
+  # profile so `apps` dev does not pay the import. The backend /api/v1/geo/reverse endpoint calls
+  # this internally; it degrades gracefully when the service is not running.
+  nominatim:
+    image: mediagis/nominatim:4.4
+    container_name: cos-nominatim
+    profiles: ['full']
+    environment:
+      PBF_URL: https://download.geofabrik.de/asia/thailand-latest.osm.pbf
+      REPLICATION_URL: https://download.geofabrik.de/asia/thailand-updates/
+      IMPORT_STYLE: address
+      NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD:-cos_nominatim_password}
+    ports:
+      # 8082, NOT 8081: schema-registry already publishes 8081 (its Confluent-conventional port)
+      # and both services are in the 'full' profile, so `docker compose --profile full up` raced —
+      # nominatim won and schema-registry died with "port is already allocated". Schema Registry is
+      # required infrastructure (QM-9), so nominatim is the one that moves.
+      - '${NOMINATIM_PORT:-8082}:8080'
+    volumes:
+      - nominatim_data:/var/lib/postgresql
+    shm_size: 1gb
+    healthcheck:
+      # curl, NOT wget: the mediagis/nominatim image ships curl at /usr/bin/curl but has no wget,
+      # so the previous `wget -qO-` probe failed with "wget: not found" on every attempt and the
+      # container could never report healthy no matter what the service was doing. Same class of
+      # bug as the schema-registry probe below — verify the tool exists in the image before using it.
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:8080/status || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Importing the Thailand OSM extract takes far longer than a minute on first boot; until it
+      # finishes the HTTP port is not listening, which is a legitimate "not ready yet", not a failure.
+      start_period: 60s
+    networks:
+      - cos-network
+
+  # ─── Analytics Worker (Go) — internal only (health-only until Phase 24) ───
+  analytics-worker:
+    build:
+      # Root context: this service `replace`s the shared coslib module at libs/go (ADR-021).
+      context: .
+      dockerfile: services/analytics-worker/Dockerfile
+    container_name: cos-analytics-worker
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: '8090'
+      OTEL_SERVICE_NAME: analytics-worker
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8090/health/live || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    develop:
+      watch:
+        - path: ./services/analytics-worker
+          action: rebuild
+    networks:
+      - cos-network
+
+  # ─── KG Ingestion Worker (Go) — internal only (Kafka → Neo4j) ─────────────
+  kg-ingestion-worker:
+    build:
+      # Root context: this service `replace`s the shared coslib module at libs/go (ADR-021).
+      context: .
+      dockerfile: services/kg-ingestion-worker/Dockerfile
+    container_name: cos-kg-ingestion-worker
+    profiles: ['apps']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-cos_neo4j_password}
+      KAFKA_BROKERS: kafka:9092
+      PORT: '8090'
+      OTEL_SERVICE_NAME: kg-ingestion-worker
+    depends_on:
+      neo4j: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8090/health/live || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    develop:
+      watch:
+        - path: ./services/kg-ingestion-worker
+          action: rebuild
+    networks:
+      - cos-network

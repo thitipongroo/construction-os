@@ -1,0 +1,68 @@
+{
+  "name": "construction-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-Native Construction Operating System",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --concurrency=20",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "test:cov": "turbo run test:cov",
+    "test:integration": "turbo run test:integration",
+    "test:contract": "jest --config jest.contract.config.js",
+    "test:conformance": "jest --config jest.conformance.config.js",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "type-check": "turbo run type-check && pnpm run type-check:tests",
+    "_comment_type_check_tests": "tests/ is NOT a pnpm workspace member (pnpm-workspace.yaml lists apps/*, backend, packages/@cos/*, services/*), so `turbo run type-check` never reaches tests/contract or tests/conformance. Their type errors used to surface only when the corresponding jest job compiled them, one CI step later than every other package.",
+    "type-check:tests": "tsc --noEmit -p tests/contract/tsconfig.json && tsc --noEmit -p tests/conformance/tsconfig.json",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yaml,yml}\" --ignore-path .prettierignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yaml,yml}\" --ignore-path .prettierignore",
+    "lint:openapi": "bash ./scripts/ci/check-openapi-valid.sh",
+    "lint:routes": "node ./scripts/ci/check-route-coverage.mjs",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "migrate": "turbo run migrate",
+    "seed": "turbo run seed",
+    "prepare": "husky",
+    "test:architecture": "jest --config jest.architecture.config.js"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@mermaid-js/mermaid-cli": "^11.16.0",
+    "@pact-foundation/pact": "^17.0.0",
+    "@playwright/test": "^1.61.1",
+    "@redocly/cli": "2.47.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.12.0",
+    "@typescript-eslint/eslint-plugin": "^8.62.1",
+    "@typescript-eslint/parser": "^8.62.1",
+    "eslint": "^10.6.0",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "husky": "^9.1.7",
+    "jest": "^30.4.2",
+    "jscpd": "^5.0.12",
+    "lint-staged": "^17.0.8",
+    "markdownlint-cli2": "^0.23.1",
+    "prettier": "^3.9.4",
+    "ts-jest": "^29.4.11",
+    "ts-node": "^10.9.2",
+    "turbo": "^2.10.12",
+    "typescript": "^6.0.3",
+    "yaml": "^2.9.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,yaml,yml}": [
+      "prettier --write"
+    ]
+  }
+}

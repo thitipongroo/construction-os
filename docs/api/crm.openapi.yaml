@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: Construction OS — CRM API
+  version: 1.0.0
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    CRM Service — Lead → Opportunity → Customer (§11.3, §20.7.10, ADR-029).
+    `convert` wins an opportunity and creates a finance.customers row (the canonical Customer
+    store, ADR-024). All endpoints require Bearer JWT (Keycloak RS256).
+    RBAC: read = EXECUTIVE + CRM_SALES_MANAGER; write = CRM_SALES_MANAGER.
+
+    **Reviewed 2026-09-03** against `backend/src/modules/crm/` at 7291fc97. The only change to the
+    controller or its DTOs since this document was last written is `JwtAuthGuard` moving from
+    `../identity/guards/` to `../../shared/guards/` — an import path, not a route, a payload or a
+    status code. This line records the comparison the freshness gate asks for, which compares commit
+    timestamps and so counted the refactor as a source change.
+servers:
+  - url: /api/v1
+    description: Current version
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /crm/leads:
+    get:
+      operationId: getCrmLeads
+      tags: [crm]
+      summary: List leads (filterable by status)
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Lead list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postCrmLeads
+      tags: [crm]
+      summary: Create a lead
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contact_name: { type: string }
+                company: { type: string }
+                source: { type: string }
+                assigned_to: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Lead created
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /crm/opportunities:
+    get:
+      operationId: getCrmOpportunities
+      tags: [crm]
+      summary: List opportunities (filterable by status)
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Opportunity list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postCrmOpportunities
+      tags: [crm]
+      summary: Create an opportunity from a lead (qualifies the lead)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lead_id, title]
+              properties:
+                lead_id: { type: string, format: uuid }
+                title: { type: string }
+                value: { type: string, description: DECIMAL string }
+                expected_close_date: { type: string, format: date }
+                assigned_to: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Opportunity created
+        '404':
+          description: Lead not found
+  /crm/opportunities/{opportunityId}/convert:
+    patch:
+      operationId: patchCrmOpportunitiesByOpportunityidConvert
+      tags: [crm]
+      summary: Convert a won opportunity to a Customer (finance.customers)
+      parameters:
+        - { name: opportunityId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Customer created from the won opportunity
+        '404':
+          description: Opportunity not found
+        '422':
+          description: Opportunity already converted
+  /crm/contacts:
+    get:
+      operationId: getCrmContacts
+      tags: [crm]
+      summary: List contacts (filterable by lead)
+      parameters:
+        - { name: lead_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Contact list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postCrmContacts
+      tags: [crm]
+      summary: Create a contact under a lead
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lead_id, name]
+              properties:
+                lead_id: { type: string, format: uuid }
+                name: { type: string }
+                email: { type: string }
+                phone: { type: string }
+                role: { type: string }
+      responses:
+        '201':
+          description: Contact created
+        '404':
+          description: Lead not found
+  /crm/customers:
+    get:
+      operationId: getCrmCustomers
+      tags: [crm]
+      summary: List customers (finance.customers)
+      responses:
+        '200':
+          description: Customer list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token

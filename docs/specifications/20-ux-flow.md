@@ -1,0 +1,925 @@
+---
+title: 'UX Flow'
+version: '1.6.0'
+status: Active
+last_updated: '2026-07-10'
+authors:
+  - thitipongroo
+related_docs:
+  - 06-rbac-permission-matrix.md
+  - 13-product-architecture.md
+  - 21-mvp-scope.md
+---
+
+# 20. UX Flow
+
+## Table of Contents
+
+- [20.1 UX Philosophy](#201-ux-philosophy)
+- [20.2 Role-based UX](#202-role-based-ux)
+  - [Executive](#executive)
+  - [Project Manager](#project-manager)
+  - [Site Engineer](#site-engineer)
+  - [Procurement Officer](#procurement-officer)
+  - [Finance](#finance)
+  - [Safety Officer](#safety-officer)
+  - [CRM / Sales Manager](#crm--sales-manager)
+- [20.3 Example Daily Site Workflow](#203-example-daily-site-workflow)
+- [20.4 SYSTEM_ADMIN Panel](#204-system_admin-panel)
+- [20.5 Internationalisation and Localisation](#205-internationalisation-and-localisation)
+- [20.6 Web Application — Authentication and Session](#206-web-application--authentication-and-session)
+- [20.7 Web Application — Page Inventory per Role](#207-web-application--page-inventory-per-role)
+- [20.8 Accessibility (WCAG 2.2 AA)](#208-accessibility-wcag-22-aa)
+
+---
+
+## 20.1 UX Philosophy
+
+Construction workers do NOT behave like SaaS office users.
+
+Therefore UX MUST be :
+
+- Mobile-first
+- Offline-capable
+- Low cognitive load
+- Fast data entry
+- Voice/photo friendly
+- WhatsApp/LINE-like simplicity
+- Role-based simplicity
+
+---
+
+## 20.2 Role-based UX
+
+### Executive
+
+Needs :
+
+- Portfolio health
+- Risk alerts
+- Cash flow
+- Margin forecast
+- Delay prediction
+
+### Project Manager
+
+Needs :
+
+- Schedule tracking
+- Procurement status
+- Budget variance
+- Site blockers
+
+### Site Engineer
+
+Needs :
+
+- Daily tasks
+- Drawing access
+- Inspection forms
+- Material requests
+
+### Procurement Officer
+
+Needs :
+
+- RFQs
+- Vendor comparisons
+- Delivery tracking
+
+### Finance
+
+Needs :
+
+- Cost recognition
+- Payment approvals
+- Cash flow
+
+### Safety Officer
+
+Needs :
+
+- Safety checklists
+- Incident reporting
+- Safety compliance status
+- Violation alerts
+
+### CRM / Sales Manager
+
+Needs :
+
+- Lead pipeline
+- Opportunity tracking
+- Proposal generation
+- Contract management
+
+---
+
+## 20.3 Example Daily Site Workflow
+
+Morning :
+
+1. Worker check-in
+2. Task assignment
+3. Material verification
+4. Safety checklist
+
+During work :
+
+1. Progress updates
+2. Photo uploads
+3. Issue reporting
+4. RFI submission (Request for Information — recorded as a Task record with work_type: rfi,
+   linked to project_id and optionally to a BOQ item or drawing; see 11-database-schema Tasks)
+
+End of day :
+
+1. Daily report generation
+2. Cost updates
+3. Delay/risk analysis
+4. Executive summary
+
+AI Copilot assists at key steps.
+
+MVP AI scope (Layer A — Assistive only) :
+
+- Daily report generation
+- Voice transcription for field notes
+- OCR for drawings and invoices
+- Document summarization
+
+Layer B (Analytical — predictions) and Layer C (Autonomous — auto-actions) activate post-MVP.
+See 21-mvp-scope for full AI phasing.
+
+---
+
+## 20.4 SYSTEM_ADMIN Panel
+
+Internal platform administration UI. Accessible only to users with the `SYSTEM_ADMIN` role.
+Not visible to tenant users.
+
+### Access
+
+- Route: `/admin` (protected — SYSTEM_ADMIN role required)
+- Authentication: same Keycloak JWT flow as the main application
+- All actions are logged to `platform.audit_logs` — **with a mandatory justification** (§6.7). Since
+  2026-09-14 this is true rather than stated: create, deactivate, assign dedicated DB, mark contracted,
+  approve and abort each write one row (`action` `tenant.*`, `resource_type` `tenant`, `tenant_id` = the
+  TARGET tenant, `metadata.justification`) inside the action's own transaction, so an action that cannot
+  be audited does not happen. The API answers `400` when `justification` is missing or outside 10–500
+  characters after trimming. Until then the tenant module wrote no audit row for any of them.
+- Shell (2026-09-14; redrawn 2026-09-15, R10 and R13): one shell for the whole panel, drawn to the Stitch
+  "Tenant List & DB Provisioning - SYSTEM_ADMIN" screen — a 48 px top bar and a 256 px side menu. The panel is
+  exactly the viewport tall: only the workspace scrolls, the side menu does not scroll with it and keeps Cluster
+  Pulse on its bottom edge (it scrolls on its own only when its entries exceed the height). Entries with no page
+  are shown DISABLED and announced as unavailable, never linked (product-owner decision). Since 2026-09-15 (R17)
+  every entry has a page and is linked, active on its own route: Tenants `/admin`, Cluster Infrastructure
+  `/admin/cluster`, Dedicated DB Fleet `/admin/db-fleet`, Data Migration Approvals `/admin/migrations`, Global
+  Audit Trail `/admin/audit`, Central Prices `/admin/central-prices`, System Settings `/admin/settings`.
+- **Real values, then the drawing's (R19, product-owner decisions D16–D19; replacing R17's D5–D7 "real values or
+  `—`"):** every screen draws its Stitch drawing's full structure. A figure the platform has a source for is shown
+  and always wins; a figure it has none for shows the drawing's own value, from the one register
+  `apps/web/src/lib/adminDrawnFigures.ts`, marked COMING SOON in a code comment and never on screen. The drawing's
+  example rows are drawn after the real rows on Cluster Infrastructure, Dedicated DB Fleet and Data Migrations only
+  (D17), never counted in a real figure. A control with nothing behind it opens a "coming soon" dialog (D18). A drawn
+  value naming a tenant or host takes the open tenant's own (D19). ADR-099 amendment 2026-09-15.
+- `/admin/central-prices` — ราคากลาง catalog: import (CSV/Excel) + API-sync status + browse (ADR-061).
+  Tenant-facing: the BOQ editor surfaces `reference_price` / variance + a project BOQ-vs-ราคากลาง view — the
+  API is built (R17); the BOQ editor UI is not (decision D12).
+
+### 20.4.1 Tenant List
+
+**Purpose:** View and manage all tenants on the platform.
+
+**Displays per row:**
+
+| Field        | Notes                                             |
+| ------------ | ------------------------------------------------- |
+| Tenant code  | Unique slug                                       |
+| Tenant name  | Display name                                      |
+| Plan type    | STARTER / PROFESSIONAL / ENTERPRISE               |
+| Status       | Active / Inactive                                 |
+| Dedicated DB | — (shared) or URL hostname (dedicated, truncated) |
+| Region       | `data_region` (§5.6) — added 2026-09-14           |
+| Provisioning | §34.3 run state, `—` without a run — added 2026-09-14 |
+| Created at   | Date                                              |
+
+**Actions per row:** View detail (§20.4.7) · Audit Log (§20.4.8) · Assign Dedicated DB (ENTERPRISE only) ·
+Mark as Contracted · Deactivate · Approve (a run at the gate)
+
+**The hostname comes from `dedicated_db_host`** on `GET /api/v1/admin/tenants` (2026-09-14) — parsed
+server-side from the encrypted URL. The URL itself is never returned: it carries the database password.
+
+**Above the table (2026-09-14):** tenant counts (total · active · inactive · created in the last 7 days),
+the count of tenants with a dedicated DB, the count of runs at AWAITING_APPROVAL, a search over code /
+name / host / region and plan filter chips. Every figure is computed from the two list endpoints. One
+**migration-gate banner** per run at AWAITING_APPROVAL carries **Approve** and **Abort** (§34.5), each
+through a dialog that states what it does and asks for the justification. The banner is drawn on the Tenant List
+page (`/admin`) only, and not while a modal is open over it — no other panel page shows it (product owner
+2026-09-15).
+
+Every row action opens its Stitch modal over the list (R17); none uses a browser prompt.
+
+### 20.4.2 Create Tenant
+
+**Purpose:** Provision a new tenant on the platform.
+
+**Form fields:**
+
+| Field            | Required | Validation                          |
+| ---------------- | -------- | ----------------------------------- |
+| Tenant code      | Yes      | a-z, 0-9, underscore; 2-50 chars    |
+| Tenant name      | Yes      | 2-255 characters                    |
+| Plan type        | Yes      | STARTER / PROFESSIONAL / ENTERPRISE |
+| Dedicated DB URL | No       | Must start with postgresql://       |
+| Justification    | Yes      | 10-500 characters (§6.7)            |
+
+The Dedicated DB URL field is enabled only while ENTERPRISE is selected (2026-09-14), matching the note
+below. Presentation (2026-09-15, R13): a modal over the Tenant List on `/admin`, opened by its Create Tenant button
+(Stitch "Create Tenant - Modal Overlay - SYSTEM_ADMIN"); `/admin/tenants/new` opens the list with the modal open.
+On success the modal closes and the new tenant's row is highlighted.
+
+> Dedicated DB URL is optional at creation time — can be assigned later via §20.4.3.
+> If plan type = ENTERPRISE and the DB is already provisioned, it may be set here directly.
+
+**On submit:** calls `POST /api/v1/admin/tenants`
+
+**Success state:** redirect to Tenant List with new tenant highlighted.
+
+### 20.4.3 Assign Dedicated DB
+
+**Purpose:** Route an enterprise tenant's domain queries to a dedicated PostgreSQL instance.
+
+**Trigger:** operator clicks "Assign Dedicated DB" on a tenant row, or via tenant detail page.
+
+**Presentation (R17):** Stitch "Assign Dedicated Database - Modal Overlay". The three prerequisites are cards the
+operator TICKS — the platform cannot check them — and the URI field is enabled only when all three are ticked
+(decision D2). The drawing's pool and proxy selects are shown and send nothing.
+
+**Prerequisites shown in UI (checklist before form is enabled):**
+
+- [ ] Dedicated PostgreSQL instance provisioned and reachable
+- [ ] `prisma migrate deploy` run against the dedicated DB
+- [ ] Existing data migrated (if upgrading from shared DB)
+
+**Form fields:**
+
+| Field            | Required | Validation                                     |
+| ---------------- | -------- | ---------------------------------------------- |
+| Dedicated DB URL | Yes      | Must start with `postgresql://`; max 500 chars |
+
+**On submit:** calls `PATCH /api/v1/admin/tenants/{tenantId}/dedicated-db` with `{ dedicatedDbUrl,
+justification }`
+
+**Success state:** tenant row in list shows dedicated DB hostname; routing takes effect immediately on next request.
+
+**Warning shown before submit:**
+
+> Once assigned, all new requests for this tenant will route to the dedicated DB.
+> Ensure data migration is complete before proceeding.
+
+### 20.4.4 Mark as Enterprise Contracted
+
+**Purpose:** Signal that an Enterprise tenant has signed a contract requiring dedicated DB
+isolation, triggering `EnterpriseProvisioningWorkflow` via Temporal.
+
+**Trigger:** operator clicks "Mark as Contracted" on an ENTERPRISE tenant row.
+
+**Presentation (R17):** Stitch "Mark Tenant as Enterprise Contracted - Modal Overlay", its copy word for word
+(decision D1); the three prerequisites below are its checklist cards, computed from the tenant row (D2); the
+type-the-code field, contract reference and justification are the confirmation below.
+
+**Prerequisites shown before button is enabled:**
+
+- [ ] Tenant `plan_type` is `ENTERPRISE`
+- [ ] Tenant `is_active` is `true`
+- [ ] `dedicated_db_url` is currently `NULL` (not already provisioned)
+
+**Confirmation dialog:**
+
+> Marking `{tenant_name}` as contracted will start automated dedicated DB provisioning.
+> This will create a new AWS RDS instance and run database migrations.
+> The workflow will pause before data migration and notify you for approval.
+> Type the tenant code to confirm: `[ _________ ]`
+
+**On confirm:** calls `PATCH /api/v1/admin/tenants/{tenantId}/mark-contracted` with
+`{ contractReference?, justification }`
+
+**Success state:** workflow started banner shown; tenant row in Tenant List displays
+provisioning status badge ("Provisioning..."). SYSTEM_ADMIN receives in-app + email notification
+when workflow reaches the human gate (before data migration step).
+
+**Error states:**
+
+| Condition                | Message shown                                   |
+| ------------------------ | ----------------------------------------------- |
+| Tenant not ENTERPRISE    | Button disabled — "ENTERPRISE plan required"    |
+| Tenant inactive          | Button disabled — "Activate tenant first"       |
+| Already has dedicated DB | Button hidden — "Dedicated DB already assigned" |
+
+> See runbook: `docs/runbooks/dedicated-db-provisioning.md` for the full provisioning steps
+> that the automated workflow executes.
+
+### 20.4.5 Deactivate Tenant
+
+**Purpose:** Suspend a tenant — prevents all logins and API access.
+
+**Trigger:** operator clicks "Deactivate" on a tenant row.
+
+**Confirmation dialog required:**
+
+> Deactivating `{tenant_name}` will prevent all users from logging in.
+> Tenant data is preserved. This action can be reversed by re-activating via the API.
+> Type the tenant code to confirm: `[ _________ ]`
+
+**On confirm:** calls `PATCH /api/v1/admin/tenants/{tenantId}/deactivate` with `{ justification }`
+
+**Success state:** tenant row status changes to Inactive; row greyed out.
+
+**Presentation (R17):** Stitch "Deactivate Tenant - Modal Overlay", its copy word for word (decision D1), with the
+type-the-code confirmation above and the justification. The OPEN item of 2026-09-14 is closed.
+
+### 20.4.6 Round-2 draft — partly answered
+
+> **Answered 2026-09-15 (R17):** Import Central Prices — ADR-061 is in scope and built (D8; the button's page is
+> §20.4.12). View Detail — §20.4.7 (D5). Audit Log — §20.4.8 (D3: 50 per page, justification in full, Export CSV).
+> The Cluster Pulse, status-bar and Platform Compute rows show the drawing's values (R19, D16) — the sources below
+> are still undecided.
+>
+> **Status of the rows not answered: DRAFT, not approved. Nothing below them may be implemented until approved.**
+> These are the parts of Stitch "Tenant List & DB Provisioning - SYSTEM_ADMIN" that had no data source
+> on 2026-09-14 (product-owner decision: specify first, build in round 2). Each names what the
+> repository actually has; where it has nothing, the entry is a question, not a definition.
+
+| Drawn element | What exists in this repository (checked 2026-09-14) | Proposed definition / open question |
+| --- | --- | --- |
+| **Avg Gate Time** (Migration Gates card) | Each run's Temporal history timestamps its events; §31.3 names `approval_pending_duration_seconds` (histogram, `workflow_type`), defined in `@cos/tracing` | PROPOSED: mean time from the `notifyAwaitingApprovalActivity` completion to the `approve`/`abort` signal, over runs that passed the gate, read from run histories by a new `GET /admin/tenants/provisioning/gate-stats`. QUESTION: over what window — all time, or the last N days? |
+| **Import Central Prices** (header button) | Specified by ADR-061: `POST /api/v1/admin/central-prices/import`, `platform.central_price_catalog`, `/admin/central-prices`. **No module is built.** ADR-061 marks it post-MVP | PROPOSED: the button opens `/admin/central-prices` once that ADR is implemented; until then it stays absent. QUESTION: is ADR-061 in scope for round 2, or does the button wait for it? |
+| **View Detail** (row action) | §20.4.3 mentions "tenant detail page" with no contents. `GET /admin/tenants` holds every non-secret tenant column | QUESTION: which fields and actions does the detail page carry? No definition is proposed — the contents are a product decision |
+| **Audit Log** (row action) | `platform.audit_logs` (actor, action, resource, metadata); §6.7 grants SYSTEM_ADMIN "read all tenant audit logs". **No read endpoint exists** | PROPOSED: `GET /api/v1/admin/tenants/{tenantId}/audit-logs?cursor=` — newest first, SYSTEM_ADMIN only, the read itself audited. QUESTION: page size, and whether the justification is shown in full |
+| **Cluster Pulse** — EMQX Broker %, Timescale Chunks, Mesh Latency, Queue Backlog | Prometheus scrapes cos-backend, ai services, file-service, kafka (JMX), node-exporter and annotated pods (`infrastructure/monitoring/prometheus/prometheus.yml`). **No EMQX scrape job.** No service mesh is deployed (no Istio/Linkerd in `infrastructure/`). §31.3 lists Kafka consumer lag. TimescaleDB exposes `timescaledb_information.chunks` | QUESTIONS: (1) "EMQX Broker 99.98%" — a percentage of WHAT (uptime? delivered messages?), and scraped from where? (2) "Mesh Latency" — there is no mesh; which latency is meant? (3) "Queue Backlog" — Kafka consumer lag (§31.3), the outbox, or Temporal task queues? (4) "Timescale Chunks: Healthy" — what makes it unhealthy? |
+| **Status bar** — `EMQX: 99.98%`, `PG Fleet: 42 Ded. / 128 Pool` | "Ded." = tenants with `dedicated_db_host` is computable today. "Pool" has no definition | QUESTION: what is counted as "Pool" — shared-DB tenants, PgBouncer server connections, or database instances? |
+| **Platform Compute 28% · Headroom Ok** | node-exporter + Kubernetes pod metrics in Prometheus; §18 sets a ≤70% steady-state headroom target per layer | QUESTION: which layer's utilisation is "Platform Compute" (cluster CPU requests? usage?), and does "Headroom Ok" mean below §18's 70%? The backend has no Prometheus query client today, so this also needs one |
+
+### 20.4.7 Tenant Detail & Provisioning Console
+
+Stitch "Tenant Detail & Provisioning Console" as a modal over the Tenant List (decision D5). Every panel is drawn.
+Real: the tenant's code, name, plan, realm, region, active state, dedicated host or "shared database", created date
+and provisioning run state. Everything else — cluster state figures, telemetry, Vault / mTLS, compliance lines —
+shows the drawing's values (R19, D16), the Vault path with the open tenant's code (D19). Its Operational card opens
+the real row actions (Audit Log, Assign DB, Mark as Contracted, Deactivate); the tabs and drawn operations with
+nothing behind them open the "coming soon" dialog (D18).
+
+### 20.4.8 Tenant Audit Log
+
+Stitch "Tenant Audit Log - Modal Overlay" (decision D3). `GET /api/v1/admin/tenants/{tenantId}/audit-logs?cursor&limit&q`
+— newest first, 50 per page, keyset cursor, `q` over action, actor e-mail and justification; the justification is
+shown in full. Export CSV is `GET …/audit-logs/export.csv`. TOTAL (30D) is real; SECURITY, ACTIVE, the Hash column
+and the integrity footer show the drawing's values (R19, D16) — `audit_logs` carries no hash chain — and Trigger,
+Verify and every event category but "All" open the "coming soon" dialog (D18). Every read and export is itself written to
+`platform.audit_logs` (`audit.read` / `audit.export`).
+
+### 20.4.9 Cluster Infrastructure
+
+`/admin/cluster`, Stitch "Cluster Infrastructure & Fleet Telemetry" (decision D6). The DB fleet tile counts tenants
+with and without a dedicated database. Every other figure, and the drawing's eight node rows, show the drawing's
+values (R19, D16–D17); its controls open the "coming soon" dialog (D18). No real node exists behind any row.
+
+### 20.4.10 Dedicated DB Fleet
+
+`/admin/db-fleet`, Stitch "Dedicated DB Fleet Management" (decision D6). One row per tenant with a dedicated host,
+with the gate filter, sort and paging. Instance figures show the drawing's values, and the drawing's six instance
+rows follow the real ones (R19, D16–D17); controls with nothing behind them open the "coming soon" dialog (D18).
+
+### 20.4.11 Data Migrations & Approval Gate
+
+`/admin/migrations`, Stitch "Data Migrations & Approval Gate" (decision D7). The ledger is every provisioning run
+(§34.3) with its state; the gate panel is the selected run at AWAITING_APPROVAL with Approve / Abort and the
+justification (§34.5). Transfer volume, payload, checksums, progress and CDC lag show the drawing's values, and
+the drawing's five ledger rows follow the real runs (R19, D16–D17); New Job and Archive open the "coming soon" dialog
+(D18).
+
+### 20.4.12 Central Price Register (ราคากลาง)
+
+`/admin/central-prices`, Stitch "ราคากลาง Central Price Register" (ADR-061, decisions D8, D9). The register is
+`GET /api/v1/admin/central-prices` with its period filter and cursor paging; Download CSV template and Import
+Central Prices (file, effective period, source reference, justification) are the real endpoints. The sync panel is
+`GET …/sync-status`; the failed-sync panel is the newest FAILED run, and Force Retry Sync is `POST …/sync` — the
+e-GP adapter is a stub, so it records NOT_CONFIGURED. Prices are shown from their stored decimal text, never through
+a JS number. The payload-signature line, retry count, impact and fallback lines show the drawing's copy where a real
+run does not contradict them (R19, D16); the technical log opens the "coming soon" dialog (D18).
+
+### 20.4.13 Global Audit Log and System Settings
+
+**Global Audit Log** — `/admin/audit`, Stitch "Global Audit Log" (decision D4). `GET /api/v1/admin/audit-logs` with
+tenant, actor, action (exact, or a prefix ending in `.`), `from` / `to` (a date is 00:00 UTC; a date-time needs `Z`
+or an offset; `to` is exclusive) and `q`; `GET …/summary` for the cards; `GET …/export?format=csv|json`. The
+integrity seal, VALID chips, hash column, ROOT_CHAIN and Merkle callout show the drawing's values (R19, D16) —
+nothing computes them — and Verify Ledger Integrity and the event tiers open the "coming soon" dialog (D18). The
+drawing cites §16.4 for the mandatory justification; the mandate is §6.7, and §6.7 is shown.
+
+**System Settings** — `/admin/settings`, Stitch "System Settings" (decision D10, ADR-108). `GET` / `PUT
+/api/v1/admin/settings`: one versioned document, saved whole with the §6.7 justification and the version it was
+read at (a stale version is `409 COS-PSET-001`); every save is audited with before / after. STORED ONLY — nothing
+reads these values yet; ADR-108 records it (the drawing has no stored-only line, product-owner decision D15,
+2026-09-15). Every field starts "not set"; no default is invented. The feed count, Active Window chip, cluster
+region, fleet health, pool mode, audit state and the footer show the drawing's copy (R19, D16).
+
+---
+
+## 20.5 Internationalisation and Localisation
+
+### Language Support
+
+| Language | Status | Scope                                   |
+| -------- | ------ | --------------------------------------- |
+| Thai     | MVP    | All UI strings, error messages, reports |
+| English  | MVP    | All UI strings, error messages, reports |
+
+All UI strings must be externalised via the i18n library — no hardcoded human-readable
+text in component source. Thai is the primary field language for site workers.
+
+### Locale Codes and File Convention
+
+- **Default locale:** `en-US` (product-owner decision 2026-07-26 — overrides the original `th-TH`
+  default). **Fallback locale:** `en-US`. Users switch to `th-TH` in-app; Buddhist Era display
+  (configurable per tenant — see Thai-specific Rules below) still applies when Thai is selected.
+- **Locale negotiation:** honour the `Accept-Language` HTTP header for API responses; a user's
+  stored profile locale overrides the header when present.
+- **Translation file location:** `apps/{web,mobile}/src/i18n/{locale}.json` — one file per locale
+  per app, applying to **both** the web app and the React Native mobile app.
+- **i18n key format:** `{domain}.{screen}.{element}` (e.g. `procurement.list.emptyState`).
+- **Plural forms:** use ICU MessageFormat syntax for any count-dependent string — never assume
+  English plural rules apply to other locales.
+
+### Thai-specific Rules
+
+- Date format: `DD/MM/YYYY` (Buddhist Era optional, configurable per tenant)
+- Currency: THB as default for Thai tenants; format `฿1,234,567.89`
+- Phone numbers: displayed as `(+66) 0XX-XXX-XXXX` — the dial code in parentheses, then the national
+  number with its leading trunk `0` and hyphen groups. Amended 2026-08-06; the rule previously said
+  only `0XX-XXX-XXXX`, which dropped the country from a screen a person may be reading precisely to
+  check which number the platform holds for them. Storage is unchanged: E.164 (`+66811000003`) on
+  the wire and in the database, this format on screen only.
+  - **Other countries keep their own grouping**, not Thailand's. The dial code is stripped, the
+    national number is grouped by that country's convention, and the same parenthesised `(+CC)`
+    prefix is applied. A number whose country has no grouping rule on file is shown as stored rather than
+    forced into 3-3-4 — a wrongly grouped phone number reads as a typo in the record.
+- Number separators: `.` for decimal, `,` for thousands (standard Thai business convention)
+
+### Localisation Gap Tracking
+
+Thai-specific business rules that have no direct international equivalent (e.g., WHT
+calculation logic, BoT regulatory fields, Buddhist Era dates) must be:
+
+1. Tagged in source code with `// i18n: TH-SPECIFIC`
+2. Documented in `docs/registers/localization-gaps.md` before the feature merges
+
+`docs/registers/localization-gaps.md` is the authoritative registry of all TH-specific rules.
+It must be reviewed before adding support for any new country (VN, SG, MY, ID) to ensure
+TH-specific logic is not silently applied to non-TH tenants.
+
+---
+
+## 20.6 Web Application — Authentication and Session
+
+> **Platform:** `apps/web/` (Next.js + Serwist) — tablet/laptop browser, online + offline
+> (deployable: `32-implementation-specifications` §32.2).
+> **Scope:** the web app is a **full operational client** for all roles — not a dashboard-only
+> surface. It renders the same authentication paths and RBAC model defined for the platform;
+> it introduces **no new auth mechanism**. Authoritative auth spec: §5.4
+>
+> the React Native app also renders
+> **both** paths — Path A (phone + OTP) and Path B (email/password via Keycloak OIDC) — on the
+> smartphone. Who may use which is §5.4.4, not the platform: both are open to all roles except
+> `TENANT_ADMIN` and `FINANCE`, which are Path B only. Same §5.4 mechanism, no new auth. See
+> `context/phases/phase-10-mobile-offline-engine.md` Auth.
+
+### 20.6.1 Login
+
+The web login renders **both** authentication paths already defined in §5.4 (master Phase 2):
+
+| Path                      | Users                                                            | Mechanism                                 | Route        |
+| ------------------------- | ---------------------------------------------------------------- | ----------------------------------------- | ------------ |
+| Path B — email + password | Any role. **Required** for `TENANT_ADMIN` and `FINANCE` (§5.4.4) | Keycloak OIDC (OAuth2), RS256 JWT         | `/login`     |
+| Path A — phone + SMS OTP  | Any role **except** `TENANT_ADMIN` and `FINANCE` (§5.4.4)        | Custom OTP module → Keycloak Direct Grant | `/login/otp` |
+
+- **MFA (TOTP):** required for `TENANT_ADMIN` and `FINANCE` (§5.4; master Phase 2) — MFA challenge
+  page shown after primary factor succeeds.
+- **Session:** Keycloak-issued JWT — access token 15 min, refresh token 7 days, with native
+  Keycloak refresh-token rotation (`refreshTokenMaxReuse: 0`) per §5.4 (step 6). The web client
+  consumes this same session model; no web-specific token lifetime is introduced.
+- **Post-login routing:** redirect to the role's landing page (first row of that role's table in
+  §20.7), resolved from the JWT `role` claim.
+- **Logout:** `/logout` clears the local session and performs Keycloak RP-initiated logout.
+- **Device trust (mobile Path A):** the OTP verification screen shows a trusted/untrusted device
+  indicator — green when the device is trusted, red when not. "Trusted" is a **server-side fact**, not
+  a client claim: the mobile app holds a non-extractable P-256 key (Secure Enclave / Android Keystore)
+  whose SPKI public key is registered per user in `platform.trusted_devices`; the device proves
+  possession by signing a single-use challenge (`/auth/otp/request` → `challenge`, verified at
+  `/auth/otp/attest` → `deviceTrusted`) **before** the OTP step, so the banner shows a real state while
+  the user enters the code. Login (`/auth/otp/verify`) is plain OTP and never gated on trust. Trust is
+  **earned** — a device is untrusted on its first
+  login (the OTP is the authenticator) and enrols on success, so the next login from it is trusted;
+  trust has a 30-day sliding window and can be revoked (`/auth/devices`). Device trust is **additive
+  and non-blocking**: a failed check only shows red, it never prevents login. See ADR-054. The
+  hardened **v2 — platform attestation (Play Integrity on Android / App Attest on iOS, via
+  `@expo/app-integrity`, verified server-side) — is no longer deferred: it was accepted on
+  2026-08-04 (ADR-082)**, because the device-integrity rows on the transparency portal
+  (security patch level, root/jailbreak state) and the trust score of ADR-081 have no other honest
+  source. Attestation keeps ADR-054's safety property: it is additive and non-blocking, its registry
+  columns are nullable (absent attestation is a distinct state from failed), and it never gates
+  login. The `deviceId`/`signature` fields are optional in the OTP API
+  (`docs/api/auth.openapi.yaml`).
+
+### 20.6.2 Web Application Shell (all authenticated pages)
+
+- **Role-filtered navigation:** left sidebar + top bar; visible items are filtered by the JWT
+  `role` claim (RBAC) — a role never sees navigation for pages it cannot access.
+- **In-app notifications:** notification bell fed by SSE (`19-notification-architecture` §19.2,
+  §19 "active in web UI") — never WebSocket.
+- **Offline indicator + sync status:** PWA offline support via Serwist + IndexedDB
+  (Phase 10 Target B). Offline-capable pages mirror the mobile sync entities (site reports,
+  issues, inspections, deliveries); read views are served from cache when offline.
+- **Language switcher:** `th` / `en` per §20.5.
+- **Layout convention:** list views use **data tables** (web/desktop design tokens —
+  `32-implementation-specifications` §32.7 "table content"); the mobile no-tables rule does
+  **not** apply to web.
+- **Authorization:** every page enforces RBAC (role claim) + ABAC (`project_membership`,
+  `tenant_match`, `resource_ownership`) per master Phase 2 / §6.
+
+---
+
+## 20.7 Web Application — Page Inventory per Role
+
+> **Derivation:** each page below maps to (a) the role's documented needs in §20.2, (b) the
+> per-role mobile navigation in master Phase 10 (where enumerated), and (c) the module APIs in
+> §14 / master Phases 3–7, 14, 20–22. Routes follow API resource names. No page introduces a
+> capability not already specified for that role.
+> **Tenant-scoping:** all routes are within the authenticated tenant; SYSTEM_ADMIN cross-tenant
+> pages are the separate `/admin` panel in §20.4.
+
+### 20.7.1 Executive (`EXECUTIVE`)
+
+Source: §20.2 Executive; master Phase 10 EXEC nav; Analytics (Phase 14) + AI reports (Phase 12).
+
+| Route        | Page              | Purpose                                                                         | Source                                                          |
+| ------------ | ----------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `/`          | Portfolio home    | KPI summary: active projects, total budget vs actual, risk alerts               | `GET /api/v1/analytics/executive`                               |
+| `/tasks`     | Portfolio tasks   | Overdue / due-this-week / blocked across the tenant, plus the critical path     | `GET /api/v1/tasks/portfolio-summary`, `GET /api/v1/projects/{id}/critical-path` |
+| `/safety`    | Portfolio safety  | Compliance and incidents across every project, with a per-project ranking       | `GET /api/v1/safety/compliance`, `GET /api/v1/safety/incidents` |
+| `/more`      | More              | Tile hub — portfolio, financial forecast, risk centre, vendor directory         | Navigation only                                                 |
+| `/portfolio` | Portfolio         | Project list with status chips + budget-variance badge; drill to project health | Analytics + Project APIs                                        |
+| `/alerts`    | Portfolio tasks   | Overdue / due-this-week / blocked across the tenant, the AI delay-risk feed and the critical path | `GET /api/v1/tasks/portfolio-summary`, `GET /api/v1/tasks/portfolio-critical-path`, `POST /api/v1/ai/reports/delay-risk` |
+| `/reports`   | Executive reports | AI executive summaries per project                                              | `POST /api/v1/ai/reports/executive-summary`                     |
+
+**Mobile bottom navigation (2026-09-07, ADR-098 amended): `Home · Alerts · Portfolio · Reports`.**
+
+`/home`, `/alerts`, `/portfolio` and `/reports` are the role's four mobile tabs; `/safety` and
+`/more` are reached from the navigation drawer.
+
+**`/alerts` IS THE PORTFOLIO TASK ROLL-UP, and that is a change to this table rather than a reading
+of it.** This page was the risk feed — "delay risk, budget overrun, critical issues sorted by
+severity" — and the implementation matched. The drawing behind the tab named "Alerts",
+`mockup/mobile/08_executive/02_alerts/02_ex_alerts`, is the previous `02_tasks` file with FOUR LINES
+changed (the four labels in its `<nav>`; the body is byte-identical), so it draws the task roll-up.
+The product owner chose the drawing on 2026-09-07 and directed that the risk feed be removed and
+this specification amended.
+
+**The risk feed is gone from the product.** Nothing else lists projects by severity: the Home screen
+counts them and the Portfolio screen bands its cards, but neither is the list. Restoring it is a new
+page, not a revert.
+
+**`/tasks` is no longer an EXECUTIVE page.** The screen it carried for this role now answers at
+`/alerts`, and the same screen under two routes is what §32.7 records as the `dashboard` mistake. The
+route and its drawer row remain for the field roles, unchanged.
+
+This bar has changed twice, both times because the product owner replaced the drawings the role is
+built from, and the order is not a restoration of either earlier bar:
+
+| Until 2026-09-05 | 2026-09-05 (ADR-098) | From 2026-09-07 |
+| ---------------- | -------------------- | --------------- |
+| `Home · Portfolio · Alerts · Reports` | `Home · Tasks · Safety · More` | `Home · Alerts · Portfolio · Reports` |
+
+Alerts and Portfolio are the other way round from the pre-09-05 bar. This table, the §32.7 per-role
+table and the tab table in code are amended together each time; this is the only role whose mobile
+nav this specification enumerates, so each change is a specification change rather than a deviation.
+
+**The order was not read off the drawings.** The four `code.html` files under
+`mockup/mobile/08_executive/` give four different bars and contradict themselves on which glyph
+belongs to which label — `assignment` is labelled "Alerts" on three screens and "Tasks" on the
+fourth, `health_and_safety` carries three different labels, and `analytics` is drawn as the ACTIVE
+tab on both `01_home` and `03_portfolio`. The labels were changed over an older bar without the
+icons being moved. ADR-085 makes a mockup authoritative for style, which presumes a drawing that
+says one thing; the product owner settled the order directly, and the tabs keep the reviewed glyphs
+the bar shipped with before 2026-09-05.
+
+**`/reports` is the drawings' `04_report`, not a new route.** The screen that drawing draws is the
+AI executive summary this table already lists at `/reports`, in a styled form. The tab keeps the
+label "Reports", which is what that drawing's own active tab reads.
+
+`/safety` is a NEW page, not `/safety/checklists` or `/safety/permits` under another name: it asks a
+portfolio question — how safety stands across every project — which none of the site-scoped safety
+pages answers. `/tasks` and `/more` are shared routes whose screen branches on role.
+
+`/safety` and `/more` stay reachable after leaving the bar on 2026-09-07 (PO decision — keep them,
+reach them from the drawer). Neither is governed by a §6.4 module, so both are listed explicitly in
+`drawerLinks.ts` rather than derived. `/tasks` would have returned to the drawer on its own, being
+derived from §6.4's "Tasks" row — it is removed from that row FOR THIS ROLE ONLY, because its screen
+is now the `/alerts` tab and offering it a second time under a second name is the case above.
+
+**Figures without a source.** Several panels on the mobile Tasks and Safety screens print values this
+platform cannot compute — a compliance percentage, safe man-hours, a per-project safety score, a
+six-month trend. `GET /safety/compliance` returns four counts and no percentage. Those values come
+from the drawings and are registered in one module, per ADR-099; they are not API contracts and no
+endpoint above supplies them.
+
+### 20.7.2 Project Manager (`PROJECT_MANAGER`)
+
+Source: §20.2 PM; master Phase 10 PM nav; Phases 3, 5, 6, 14.
+
+| Route                           | Page               | Purpose                                                                    | Source                                                          |
+| ------------------------------- | ------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `/projects`                     | Projects           | List/create projects; filter by status/type                                | Phase 3 Project APIs                                            |
+| `/projects/{id}`                | Project detail     | Status transitions, members, documents, BOQ summary                        | Phase 3 + Phase 4                                               |
+| `/projects/{id}/procurement`    | Procurement status | RFQ/PO status (read), delivery tracking                                    | Phase 5 (read)                                                  |
+| `/projects/{id}/finance`        | Budget variance    | Budget vs actual vs committed (read)                                       | Phase 7 (read)                                                  |
+| `/projects/{id}/site`           | Site summary       | Site report summary, issue triage                                          | Phase 6                                                         |
+| `/projects/{id}/risks`          | Risk register      | Likelihood×impact heat map; raise/mitigate/close; AI-suggested triage      | §14, ADR-065                                                    |
+| `/projects/{id}/communications` | Doc-control        | Site instructions / meeting minutes / correspondence + action-item tracker | §14, ADR-066                                                    |
+| `/analytics/pm/{projectId}`     | PM dashboard       | Manpower trend, issues by severity, inspection rate, procurement KPIs      | `GET /api/v1/analytics/pm/{projectId}` (Phase 14 — implemented) |
+
+### 20.7.3 Procurement Officer / Procurement Manager (`PROCUREMENT_OFFICER`, `PROC_MANAGER`)
+
+Source: §20.2 Procurement Officer; master Phase 10 Procurement nav; Phase 5.
+
+| Route                     | Page                 | Purpose                                                                      | Source               |
+| ------------------------- | -------------------- | ---------------------------------------------------------------------------- | -------------------- |
+| `/procurement/requests`   | Purchase requests    | PR list/create                                                               | Phase 5              |
+| `/procurement/rfqs`       | RFQs                 | RFQ list/detail; `PROC_MANAGER` approve/cancel (EVALUATED→AWARDED/CANCELLED) | Phase 5 RFQ workflow |
+| `/procurement/quotations` | Quotation comparison | Compare quotations, mark selected                                            | Phase 5              |
+| `/procurement/orders`     | Purchase orders      | PO list + approval chain + delivery timeline                                 | Phase 5 PO workflow  |
+| `/procurement/deliveries` | Deliveries           | Record/receive deliveries                                                    | Phase 5              |
+| `/procurement/vendors`    | Vendors              | Vendor master, vendor scoring                                                | Phase 5              |
+| `/procurement/warehouses` | Warehouses           | Warehouse list (site store / central)                                        | §14, ADR-060         |
+| `/procurement/inventory`  | Inventory            | Stock-on-hand by warehouse/material; low-stock (reorder) view                | §14, ADR-060         |
+| `/procurement/grn`        | Goods receipt        | Receive against deliveries (GRN); stock-movement ledger                      | §14, ADR-060         |
+
+### 20.7.4 Finance (`FINANCE`)
+
+Source: §20.2 Finance; master Phase 10 FINANCE nav; Phase 7.
+
+| Route                                | Page               | Purpose                                                                                         | Source                                 |
+| ------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `/finance/payments`                  | Payments           | Pending payment approvals; approve/record payment                                               | Phase 7                                |
+| `/finance/budget/{projectId}`        | Budget             | Budget vs actual vs committed; budget lines                                                     | Phase 7                                |
+| `/finance/invoices`                  | Invoices           | Invoice list/detail; verify/approve/dispute                                                     | Phase 5/7 invoice flow                 |
+| `/finance/reports/variance`          | Variance report    | Budget variance across projects                                                                 | `GET /api/v1/finance/reports/variance` |
+| `/finance/contracts`                 | Contracts          | Contract list; create; open detail                                                              | §14 `finance/contracts`                |
+| `/finance/contracts/{id}`            | Contract detail    | Attach/generate document · contractor sign (PKI/VC) · issue client magic-link · signature audit | §14, ADR-058                           |
+| `/finance/contracts/{id}/variations` | Variation Orders   | VO list/detail; create/submit/approve; BOQ + budget delta                                       | §14, ADR-059                           |
+| `/finance/claims`                    | Claims             | Claim list/detail; submit/accept (→ VO)/reject                                                  | §14, ADR-059                           |
+| `/finance/bonds`                     | Bonds              | Bank-guarantee register (type/bank/amount/expiry/status) + expiry alerts                        | §14, ADR-063                           |
+| `/compliance/permits`                | Permits & licences | Permit/licence register (building permit + company licence) + expiry alerts                     | §14, ADR-064                           |
+
+### 20.7.5 Site Engineer (`SITE_ENGINEER`)
+
+Source: §20.2 Site Engineer; master Phase 10 SITE_ENGINEER nav; Phase 6.
+
+| Route               | Page                | Purpose                                             | Source                      |
+| ------------------- | ------------------- | --------------------------------------------------- | --------------------------- |
+| `/site/reports`     | Site reports        | Review/submit daily site reports; manpower overview | Phase 6                     |
+| `/site/issues`      | Issues              | Issue list, triage, escalation                      | Phase 6                     |
+| `/site/inspections` | Inspections         | Inspection results, approval/re-inspection          | Phase 6                     |
+| `/site/conflicts`   | Conflict resolution | Resolve `ConflictRecord` (offline sync conflicts)   | Phase 6 `/conflict-records` |
+
+### 20.7.6 Site Worker (`SITE_WORKER`)
+
+Source: §20.2 Site Engineer needs; master Phase 10 SITE_WORKER nav; Phases 6, 22.
+Mobile-primary role; web pages provide the same functions for tablet use.
+
+| Route               | Page             | Purpose                                       | Source             |
+| ------------------- | ---------------- | --------------------------------------------- | ------------------ |
+| `/tasks`            | Tasks            | Assigned task list; progress update           | Phase 6 task gates |
+| `/site/reports/new` | Daily report     | Submit daily site report (manpower, blockers) | Phase 6            |
+| `/site/issues/new`  | Quick issue      | Report an issue with photo                    | Phase 6            |
+| `/site/checklists`  | Safety checklist | Complete assigned safety checklist            | Phase 6 safety     |
+
+### 20.7.7 Safety Officer (`SAFETY_OFFICER`)
+
+Source: §20.2 Safety Officer + §21.2 MVP Safety scope (incident reports, checklists, work permits,
+permit approval). **Derived from role needs** — master Phase 10 does not enumerate a Safety Officer
+mobile nav; the functions are specified in §20.2 + §21.2 + master §9 (safety permit approval chain).
+
+| Route                | Page              | Purpose                                             | Source                   |
+| -------------------- | ----------------- | --------------------------------------------------- | ------------------------ |
+| `/safety/incidents`  | Incidents         | Report/track safety incidents                       | §21.2 Safety; Phase 6    |
+| `/safety/checklists` | Safety checklists | Manage/review safety checklists                     | §21.2 Safety; Phase 6    |
+| `/safety/permits`    | Work permits      | Permit approval (Safety Officer approves; PM final) | master §9 approval chain |
+| `/safety/compliance` | Compliance        | Compliance status + violation alerts                | §20.2 Safety Officer     |
+
+**Mobile (added 2026-08-13).** The sentence above — "master Phase 10 does not enumerate a Safety
+Officer mobile nav" — still holds, and the gap it describes is now closed by the mockups rather than
+by derivation. `mockup/mobile/07_safety_officer/` draws three screens, all carrying the same bottom
+bar, and the product owner settled the role's tab set from them: **Home · Incidents · Checklists ·
+Permits** (§32.7 records it and the reasoning). Three of the four routes above are on that bar;
+`/safety/compliance` is not, because the counts it returns are what the Home dashboard's
+open-incidents tile already reads — it would be the same query answered twice.
+
+**What those screens can and cannot show.** The drawings include a compliance **percentage**, a
+"safe hours since last LTI" figure, an AI-predicted risk score on an incident and an AI hazard alert
+sourced from "weather telemetry". None of the four has a source anywhere in this platform:
+`GET /safety/compliance` returns four COUNTS and no score, no table records hours against a
+lost-time injury, `/ai/reports/*` has no safety surface (SafetyVisionModel is Phase 23 and untrained
+per §22.6), and nothing ingests weather. Per the product owner's 2026-08-13 ruling each zone is
+DRAWN and states plainly that it is not available yet — the treatment §22.3 requires, since a
+surface must not read as AI-derived while a placeholder serves it.
+
+### 20.7.8 Tenant Admin (`TENANT_ADMIN`)
+
+Source: master Phase 2 User Management API (§14.3) + tenant settings. Full access to all
+tenant pages above, plus tenant administration. (Distinct from the SYSTEM_ADMIN `/admin` panel in §20.4.)
+
+| Route              | Page            | Purpose                                                                  | Source                                    |
+| ------------------ | --------------- | ------------------------------------------------------------------------ | ----------------------------------------- |
+| `/settings/users`  | User management | List/create users (Path A phone / Path B email), change role, deactivate | master Phase 2 User Management API        |
+| `/settings/tenant` | Tenant settings | Variance thresholds, retention %, LINE channel token, notification prefs | Phases 7, 20 tenant-configurable settings |
+
+### 20.7.9 Viewer (`VIEWER`)
+
+Source: RBAC role definition (master Phase 2 — read-only across modules, per project assignment).
+
+- Read-only access to the pages of whichever modules the viewer is assigned to (per
+  `project_membership`). No create/edit/approve actions are rendered.
+
+**The role's page set was enumerated on 2026-09-10**, when the product owner requested the five
+Stitch screens under `mockup/mobile/13_viewer/`. Until that day this section was three lines and
+the role's Home rendered a 22-line placeholder.
+
+| Route       | Page             | Purpose                                                               | Source          |
+| ----------- | ---------------- | --------------------------------------------------------------------- | --------------- |
+| `/home`     | Portfolio        | Project and open-issue counts, portfolio budget, tracked projects, activity | `13_viewer/01_home` |
+| `/projects` | Project list     | Every assigned project, searchable by code or name                    | `13_viewer/02_projects` |
+| `/map`      | Project map      | Where the sites are, with a sheet listing the visible ones            | `13_viewer/03_map` |
+| `/insights` | Project insights | Progress curve, safety performance, risk forecast, issue severity     | `13_viewer/04_insights` |
+| `/procurement` | Procurement | POs, deliveries and the pending count, with a delivery predictor and monitored lines | `13_viewer/06_procurement` |
+| `/budget` | Budget & cost | Total / committed / actual, absorption by category, BOQ divisions, the verified log | `13_viewer/07_budget` |
+| `/account-settings` | Account settings | The shared screen, plus a System Permissions block for this role alone | `13_viewer/05_profile` |
+
+**Extended to seven pages on 2026-09-11**, when the product owner named six Stitch screens: two new
+ones — Procurement and Budget — and four of the five above REDRAWN. `/procurement` and `/budget` are
+the third and fourth entries on this role's bottom bar and had, until that day, rendered the
+PROCUREMENT_MANAGER and FINANCE screens to a viewer, mutating controls included. Both routes now
+branch on role, the way `/home` always has; the other roles that reach them keep their screen
+untouched. See ADR-103 for the six read routes opened underneath them, and the seventeen left shut.
+
+**`/map` and `/insights` are DRAWER ROWS, not tabs.** The five drawings give FOUR different bottom
+bars — `Home · Projects · Map · Insights · Profile` on two of them, and three other sets elsewhere —
+and even the two that agree on labels disagree on glyphs. VIEWER is one of the three roles §32.7's
+table enumerates, so the collision was escalated under the ADR-098 precedent and the enumerated bar
+(`Home · Projects · Procurement · Budget`) was kept. Neither screen is lost: both carry a
+`NOT_DERIVED` drawer row, an `href: null` mount and a breadcrumb.
+
+**The role's grants widened in the same commit** (ADR-102): `safety:read`, `analytics:read` and
+`ai:read`, taking §6.8's Viewer table from seven modules to ten. Three cards on this set — the Home
+System Insight, the Insights safety panel and the Insights risk forecast — render modules the matrix
+previously denied. All three additions are `R`, so the read-only rule above is unchanged.
+
+### 20.7.10 CRM / Sales Manager (`CRM_SALES_MANAGER`)
+
+Source: §11.3 CRM lifecycle + §14 CRM APIs. Basic CRM UI is MVP (ADR-029; §21.6 updated). Advanced
+CRM UI (pipeline kanban, proposal generation) remains post-MVP.
+
+**The home dashboard was moved out of that deferral on 2026-09-09** (product owner decision). The
+sentence above read "pipeline kanban, dashboards, proposal generation" and the mobile app had
+already given this role a Home tab — every role gets one — which rendered a 22-line placeholder
+showing a pending-sync count. Deferring the dashboard did not remove the tab; it left it empty. The
+kanban and the proposal generator stay deferred, and the dashboard's own kanban button says so when
+pressed.
+
+The dashboard claims nothing the CRM tables cannot answer: the pipeline total sums OPEN
+`crm.opportunities.value` in decimal, the lead count excludes DISQUALIFIED, the win rate is
+WON / (WON + LOST) with OPEN left out of the denominator, and the three snapshot counts come from
+the three list endpoints. What the drawing shows beyond that — a month-on-month delta, an AI
+insight, and two "action required" rows needing a last-activity date no column holds — is drawn and
+registered under ADR-099.
+
+| Route                | Page          | Purpose                                                | Source     |
+| -------------------- | ------------- | ------------------------------------------------------ | ---------- |
+| `/home`              | Dashboard     | Pipeline value, active leads, win rate, stage counts   | §11.3, §14 |
+| `/crm/leads`         | Leads         | List / create leads                                    | §11.3, §14 |
+| `/crm/opportunities` | Opportunities | Create opportunity from a lead; convert won → Customer | §11.3, §14 |
+| `/crm/customers`     | Customers     | Read-only customer list (`finance.customers`)          | §11.3, §14 |
+
+### 20.7.11 System Admin (`SYSTEM_ADMIN`)
+
+- Cross-tenant platform administration is the separate **`/admin` panel** specified in §20.4 —
+  not part of the tenant-scoped page set above.
+
+### 20.7.12b Asset Management (post-MVP)
+
+Source: module permissions §06 §6.4 (Asset Management); entities §11 §11.2 (Unit, Assets).
+**IA decision: Hybrid** — tenant-level asset registry +
+project-scoped handover entry (registry: Yardi Voyager / MRI standalone pattern, aligned
+with the V3 direction in §28.9; handover: Procore / Autodesk Construction Cloud
+project-closeout pattern).
+
+| Route                 | Page           | Purpose                                                   | Source      |
+| --------------------- | -------------- | --------------------------------------------------------- | ----------- |
+| `/assets/units`       | Unit inventory | Unit list (unit_number, unit_type, status)                | §6.4, §11.2 |
+| `/projects/{id}`      | Handover tab   | Record handover; emits `AssetHandedOver`; writes registry | §6.4, §11.2 |
+| `/assets/warranty`    | Warranty       | warranty_expiry tracking (`WarrantyActivated`)            | §6.4, §11.2 |
+| `/assets/maintenance` | Maintenance    | maintenance_status (`MaintenanceScheduled`)               | §6.4, §11.2 |
+
+### 20.7.12c Preconstruction (post-MVP)
+
+Source: §01 §1.2 (Phase-2 extensions to the CRM Service). **UI decision (product owner,
+2026-07-10): separate "Preconstruction" nav section** (Procore Preconstruction /
+Autodesk BuildingConnected pattern — tender & bid management as its own product area);
+backend remains a CRM Service extension per §01 §1.2.
+
+| Route                          | Page                | Purpose                                                          | Source            |
+| ------------------------------ | ------------------- | ---------------------------------------------------------------- | ----------------- |
+| `/preconstruction/feasibility` | Feasibility studies | Feasibility study capability                                     | §01 §1.2          |
+| `/preconstruction/land`        | Land acquisition    | Land acquisition capability                                      | §01 §1.2          |
+| `/preconstruction/tenders`     | Tenders             | e-GP tender feed (sync/manual) + status; award import → Contract | §01 §1.2, ADR-062 |
+| `/preconstruction/bids`        | Contractor bids     | BOQ-priced bid prep (ราคากลาง) + submit (adapter/manual)         | §01 §1.2, ADR-062 |
+
+> Detailed screen contents for both sections are elaborated in `DESIGN.md` §15.3 /
+> §15.10; capability-level scope only is defined here until each phase begins.
+
+### 20.7.12 Vendor Portal (`VENDOR_PORTAL`)
+
+Source: §28 Vendor portal capabilities. External vendor-network users — **not** a
+tenant-scoped role. Served by a **separate `/vendor` section** (its own `app/vendor/layout.tsx`,
+outside the `(app)` AppShell) with a minimal external shell — no internal nav / role switcher,
+matching SAP Ariba Network / Coupa Supplier Portal / Procore (external portal is a separate surface).
+
+| Route                     | Page         | Purpose                                                 | Auth tier        |
+| ------------------------- | ------------ | ------------------------------------------------------- | ---------------- |
+| `/vendor/rfq/[token]`     | RFQ response | Open an invited RFQ and submit a quotation (magic-link) | Tier 1 (no acct) |
+| `/vendor`                 | Dashboard    | Invited RFQs + linked POs overview                      | Tier 2 (account) |
+| `/vendor/quotations`      | Quotations   | Submitted-quotation history                             | Tier 2           |
+| `/vendor/purchase-orders` | PO status    | Track status of POs on linked trading relationships     | Tier 2           |
+| `/vendor/invoices`        | Invoices     | Submit and track the vendor's own invoices              | Tier 2           |
+
+---
+
+## 20.8 Accessibility (WCAG 2.2 AA)
+
+**Conformance target: WCAG 2.2 Level AA** for every user-facing screen (web + React Native mobile).
+For Construction OS this is an operational-usability requirement, not only compliance: primary users
+are field workers on a phone one-handed, in direct sunlight, wearing gloves, often with situational
+or permanent motor/vision limitations.
+
+Native mobile maps WCAG intent to OS a11y APIs: iOS **VoiceOver** / Dynamic Type, Android
+**TalkBack** / font scale. React Native uses `accessibilityLabel`, `accessibilityRole`,
+`accessibilityState`, `accessible` on every interactive element.
+
+### Required success criteria (the ones that bite for a field app)
+
+| WCAG 2.2 SC                               | Requirement (as applied)                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.4.3 Contrast (Minimum)                  | Text contrast ≥ **4.5:1** (≥ 3:1 large text). Verify the §32.7 design tokens against a sunlight-readable floor.                                                     |
+| 1.4.11 Non-text Contrast                  | UI components / state indicators (input borders, focus, chips) ≥ **3:1**.                                                                                           |
+| 1.4.4 Resize Text                         | Layout must not break at **200% font scale**.                                                                                                                       |
+| 2.5.8 Target Size (Minimum)               | Interactive targets ≥ **24×24 px** — already exceeded: buttons min 44px (see `32-implementation-specifications §32.7` / master §TOUCH TARGET STANDARDS). Keep this. |
+| 2.5.7 Dragging Movements                  | Any drag (reorder, swipe-to-sync) has a single-pointer tap alternative.                                                                                             |
+| 2.4.7 / 2.4.11 Focus Visible + Appearance | Visible, non-obscured keyboard/switch focus (web); logical focus order (RN).                                                                                        |
+| 3.3.7 Redundant Entry                     | Don't re-ask data already provided in the same flow.                                                                                                                |
+| 3.3.8 Accessible Authentication           | OTP login requires no cognitive test / no inaccessible CAPTCHA.                                                                                                     |
+| 4.1.2 Name/Role/Value                     | Every control exposes an accessible name + role + state.                                                                                                            |
+
+Non-negotiable for safety flows (incident / safety report): **color is never the only signal**
+(WCAG 1.4.1) — pair with icon + text; safety alerts must be announced by the screen reader.
+
+### Acceptance criteria / gate
+
+- [x] Automated a11y lint in CI: `eslint-plugin-jsx-a11y` (web) + RN a11y checks — 0 errors on merge
+      — **done 2026-08-03.** jsx-a11y runs at error level over `apps/web/src/**/*.tsx` via the root
+      `eslint.config.mjs` (0 violations across 81 files); axe-core scans 6 routes in the Playwright
+      suite; the Lighthouse accessibility category is gated at 1.0 (see §30.9).
+- [x] Contrast audit of §32.7 tokens passes 4.5:1 / 3:1 (`docs/evidence/contrast-report.md`)
+      — **audit done 2026-08-03, and it does NOT pass.** 7 findings (F1–F7) against the §32.7 tokens
+      themselves, worst `--mobile-syncing #FFD60A` at 1.41:1 as a status indicator, and
+      `--cos-dark-elevated #111827` at 1.14:1 as the dark-surface input border. Each hex is a §32.7
+      product-owner decision, so none was changed — **awaiting product-owner decision.**
+- [~] Every interactive RN component has `accessibilityLabel` + `accessibilityRole` (CI grep gate)
+  — **gate built, target not met.** `scripts/a11y/check-rn-a11y.sh` runs in CI (`mobile-tests`).
+  Measured 2026-08-03: 24 of the 50 `apps/mobile` files with tappable elements have no
+  accessibility prop at all. It runs as a **ratchet** — warns on the 24, fails when the count
+  grows — because failing on the existing 24 would only mean disabling the check.
+- [ ] Manual screen-reader pass (VoiceOver + TalkBack) on the 5 critical flows (login, daily report,
+      issue, safety incident, sync-status) — `docs/evidence/screenreader-checklist.md`
+      — **checklist written 2026-08-03, no pass recorded yet.** Not automatable; this remains open.
+- [x] Layout verified at 200% font scale on the smallest supported device (375pt)
+      — **done 2026-08-03** for `/login`, via `expectUsableAt200PercentText` in the Playwright suite
+      (375px viewport, asserts no horizontal overflow at `font-size: 200%`). The 5 authenticated
+      routes it also covers need a backend + Keycloak, so their first run is the staging pipeline.
+- **Gate:** a screen cannot ship if it fails automated a11y lint or lacks the screen-reader pass for
+  a critical flow.
+
+---
+
+> 📎 See also: [06-rbac-permission-matrix](06-rbac-permission-matrix.md)
+> · [13-product-architecture](13-product-architecture.md) · [21-mvp-scope](21-mvp-scope.md)

@@ -1,0 +1,162 @@
+replicaCount: 2
+
+image:
+  repository: ''
+  tag: 'latest'
+  pullPolicy: IfNotPresent
+
+service:
+  # 3002 — the port the service listens on (FILE_SERVICE_PORT default in src/config.ts), the
+  # Dockerfile's EXPOSE, and the docker-compose healthcheck. This said 3001 (which is apps/web's
+  # port, not file-service's) while nothing set FILE_SERVICE_PORT, so both probes below hit a closed
+  # port and the pod could only CrashLoopBackOff. ADR-039 listed this chart's probes as UNVERIFIED.
+  port: 3002
+  # Genuine: src/plugins/metrics.ts serves Prometheus on PROMETHEUS_PORT (9464).
+  metricsPort: 9464
+
+resources:
+  requests:
+    cpu: '200m'
+    memory: '256Mi'
+  limits:
+    cpu: '500m'
+    memory: '512Mi'
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+env:
+  NODE_ENV: 'production'
+  OTEL_SERVICE_NAME: 'file-service'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel-collector:4318'
+  # NOTE: the variable is FILE_SERVICE_PORT, not PORT (src/config.ts). Pinned so the listen port
+  # cannot drift from service.port and the probes below.
+  FILE_SERVICE_PORT: '3002'
+  PROMETHEUS_PORT: '9464'
+  # The backend, for a user's verified identity (ADR-107) — no default in code, unset = 503 on every user
+  # request. ArgoCD's release name is the Application name (argo-cd docs, Helm user guide), and the backend
+  # chart names its Service <release>-cos-backend: `helm template cos-backend` renders cos-backend-cos-backend. Port 3100 is
+  # the backend's internal listener — the public port 3000 refuses these calls in production.
+  BACKEND_INTERNAL_URL: 'http://cos-backend-cos-backend:3100'
+
+envFrom:
+  - secretRef:
+      name: cos-file-service-secrets
+
+serviceAccount:
+  create: true
+  name: 'cos-file-service'
+  annotations:
+    eks.amazonaws.com/role-arn: '' # Set to S3 IRSA role ARN
+
+affinity:
+  # master:4650-4654 — schedule onto the pool this workload is sized for. Terraform labels each
+  # managed node group `workload=<pool>` (infrastructure/terraform/aws/modules/eks/modules).
+  #
+  # REQUIRED, not preferred: a "preferred" rule silently falls back to any node the moment the pool
+  # is full or missing, which is the failure this exists to prevent — an AI service quietly running
+  # on a t3.xlarge behaves, just slowly, and nothing reports it.
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: workload
+              operator: In
+              values: ['app']
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cos-file-service
+          topologyKey: kubernetes.io/hostname
+
+# Both paths are served by src/main.ts (/health/live, /health/ready). Ports must equal
+# service.port and FILE_SERVICE_PORT above.
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 3002
+  initialDelaySeconds: 20
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 3002
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+# ─── Temporal workers (file-cleanup + zip-extraction) ────────────────────────
+# A second Deployment from this chart — same image, different command. See
+# templates/worker-deployment.yaml for why they are not a sidecar and not started inside main.ts.
+workers:
+  # Turn off where there is no Temporal server to poll (a dev cluster without the `full` profile),
+  # so the pod stays absent rather than CrashLooping.
+  enabled: true
+  replicaCount: 2
+  command:
+    - node
+    - services/file-service/dist/services/file-service/src/workers/main.js
+  # 8090, matching the Go workers and cos-temporal-worker. NOT 3002 — that is the Fastify API's
+  # port, and this process does not start Fastify.
+  healthPort: 8090
+  # Heavier than the API's limits: unzipping an archive and streaming a delete batch are both
+  # memory-hungry, and the zip-bomb guard bounds the input but not the peak.
+  resources:
+    requests:
+      cpu: '200m'
+      memory: '512Mi'
+    limits:
+      cpu: '1000m'
+      memory: '1536Mi'
+  terminationGracePeriodSeconds: 300
+  # The rootfs is read-only, as it is for the API, so extraction needs a writable scratch mount.
+  volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}
+  # Both probes hit the same path: a worker polls an outbound queue and has no readiness signal
+  # distinct from liveness. initialDelay is generous because each worker builds its own
+  # Db/Minio/OpenSearch clients from loadConfig() before Worker.create resolves.
+  livenessProbe:
+    httpGet:
+      path: /health/live
+      port: 8090
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /health/live
+      port: 8090
+    initialDelaySeconds: 15
+    periodSeconds: 10
+
+networkPolicy:
+  # Off by default: these rules are schema-valid but have never been enforced in a live cluster.
+  # Read templates/networkpolicy.yaml before turning this on — the caveats are specific, and one of
+  # them (httpGet probes vs the CNI) CrashLoops the pods if it does not hold.
+  enabled: false
+  # Pod label of the only in-repository caller.
+  backendPodLabel: 'cos-backend'
+  # Pod label selector for the Prometheus that scrapes the metrics port.
+  prometheusPodLabel: 'prometheus'
+
+# Rolling deployment — master §Phase 17: surge by one, never go unavailable. maxUnavailable MUST
+# stay 0: any other value trades zero-downtime for a faster rollout, which is the opposite of what
+# the spec chose. Overridable per environment, but prod must not relax it.
+strategy:
+  type: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0

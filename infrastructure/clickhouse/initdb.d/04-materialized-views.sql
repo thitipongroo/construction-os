@@ -1,0 +1,15 @@
+-- Phase 14 — Analytics: materialized views
+--
+-- REMOVED 2026-08-23 together with the Kafka engine tables they read from. A materialized view can
+-- only fire on an INSERT into its source table, and those sources never received one — see
+-- 02-kafka-tables.sql for why, and services/analytics-worker/internal/metrics/consumer.go for where
+-- the aggregation lives now.
+--
+-- The aggregation SEMANTICS were carried across unchanged, including the two that are easy to lose:
+--   * a column a given event does not own receives an EMPTY partial state — countStateIf(1 = 0) for
+--     a count, sumState(toInt32(0)) for a sum — so one purchase order is not counted as a PO, an
+--     RFQ and an invoice at once;
+--   * a site report is dated by its own report_date, not by when it was submitted, so a report
+--     filed the next morning still belongs to the day it describes.
+--
+-- The DROPs are in 02, which runs first.

@@ -1,0 +1,58 @@
+# apps/mobile is a STANDALONE pnpm workspace, excluded from the repo-root workspace
+# (see ../../pnpm-workspace.yaml: `!apps/mobile`). This makes apps/mobile its own workspace root, so
+# `pnpm install` run from here uses these settings — no `--node-linker=hoisted` flag needed.
+#
+# WHY hoisted: React Native + Expo (SDK 51) + Metro + CocoaPods require a FLAT node_modules. pnpm's
+# default isolated linker breaks Metro's resolution of transitive expo-*/@react-native/* packages, and
+# pnpm cannot scope hoisting to one package inside a workspace (no yarn-style nohoist; negative
+# hoist-pattern does not work with node-linker=hoisted). In pnpm 10/11 the `nodeLinker` setting lives in
+# pnpm-workspace.yaml, NOT .npmrc. Expo SDK 54+ adds isolated-deps support — revisit after upgrading.
+packages: []
+nodeLinker: hoisted
+
+# detox + dtrace-provider compile native code during install (needed for the iOS Detox runner —
+# macOS only; on this platform their postinstall builds are skipped, matching prior behavior where
+# pnpm ignored them by default).
+#
+# react-native-skia MUST be allowed: its postinstall (scripts/install-libs.js) copies the prebuilt
+# native libraries out of the sibling react-native-skia-{apple,android}-* packages into the package's
+# own libs/ dir, where the iOS/Android builds look for them. It compiles nothing and downloads
+# nothing (fs.cpSync only), so blocking it gains no safety and leaves the native build without its
+# binaries. Powers <PhotoAnnotation /> (ADR-056).
+allowBuilds:
+  '@shopify/react-native-skia': true
+  detox: false
+  dtrace-provider: false
+  unrs-resolver: false
+
+minimumReleaseAgeExclude:
+  - '@expo/cli@56.1.17'
+  - '@expo/config-plugins@56.0.10'
+  - '@expo/config-types@56.0.7'
+  - '@expo/config@56.0.10'
+  - '@expo/dom-webview@56.0.6'
+  - '@expo/fingerprint@0.19.5'
+  - '@expo/log-box@56.0.14'
+  - '@expo/metro-config@56.0.15'
+  - '@expo/prebuild-config@56.0.17'
+  - '@expo/router-server@56.0.15'
+  - babel-preset-expo@56.0.16
+  - expo-asset@56.0.18
+  - expo-constants@56.0.19
+  - expo-modules-autolinking@56.0.17
+  - expo-modules-core@56.0.18
+  - expo@56.0.13
+  - '@expo/ui@56.0.19'
+  - expo-background-fetch@56.0.20
+  - expo-build-properties@56.0.20
+  - expo-location@56.0.19
+  - expo-router@56.2.12
+  - expo-task-manager@56.0.20
+
+patchedDependencies:
+  # Upstream bug facebook/react-native#54732: the DOM Event phase constants (NONE/CAPTURING_PHASE/
+  # AT_TARGET/BUBBLING_PHASE) are defined without configurable/writable, so they are read-only. Under
+  # Hermes this makes event-target-shim (used by abort-controller -> fetch) throw "Cannot assign to
+  # read-only property 'NONE'", breaking ALL network requests. The patch adds configurable+writable to
+  # the 8 Object.defineProperty calls (the fix recommended in the issue). Drop when RN ships a fix.
+  react-native@0.85.3: patches/react-native@0.85.3.patch

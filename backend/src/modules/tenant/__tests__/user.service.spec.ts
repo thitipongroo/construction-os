@@ -1,0 +1,1181 @@
+// Unit tests for UserService — user lifecycle within a tenant
+
+jest.mock('@prisma/client', () => ({
+  PrismaClient: jest.fn().mockImplementation(() => ({
+    $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
+    $transaction: jest.fn(),
+    $disconnect: jest.fn(),
+  })),
+}));
+
+jest.mock('@cos/kafka', () => ({
+  // §35.13 ESC-13: events are written to the outbox inside the business transaction —
+  // UserService no longer holds a KafkaProducer at all.
+  OutboxPublisher: { write: jest.fn().mockResolvedValue(undefined) },
+}));
+
+jest.mock('@cos/logger', () => ({
+  createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
+}));
+
+import { OutboxPublisher } from '@cos/kafka';
+import { UserService } from '../user.service';
+import { makeOutboxDouble } from '../../../shared/events/__tests__/outbox-double';
+import { KeycloakAdminService } from '../../identity/keycloak-admin.service';
+import { PrismaClient } from '@prisma/client';
+import {
+  ConflictException,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { CosRole } from '@cos/types';
+
+const TENANT_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
+const ACTOR_ID = 'aaaaaaaa-0000-0000-0000-000000000002';
+const USER_ID = 'aaaaaaaa-0000-0000-0000-000000000003';
+const KC_USER_ID = 'kc-uuid-1';
+const REALM = 'tenant-acme';
+
+const mockUserRow = {
+  user_id: USER_ID,
+  tenant_id: TENANT_ID,
+  keycloak_user_id: KC_USER_ID,
+  email: '',
+  display_name: 'สมชาย ใจดี',
+  is_active: true,
+  mfa_enabled: false,
+  created_at: new Date(),
+  updated_at: new Date(),
+};
+
+describe('UserService', () => {
+  let service: UserService;
+  let keycloakAdmin: jest.Mocked<KeycloakAdminService>;
+  let prismaMock: jest.Mocked<PrismaClient>;
+
+  beforeEach(() => {
+    keycloakAdmin = {
+      provisionPhoneUser: jest.fn().mockResolvedValue({ keycloakUserId: KC_USER_ID }),
+      createEmailUser: jest.fn().mockResolvedValue({ keycloakUserId: KC_USER_ID }),
+      deleteUser: jest.fn().mockResolvedValue(undefined),
+      // Security review F1/F2 — deactivation must disable the Keycloak account, and a role change must
+      // rewrite the `role` user attribute the JWT claim is mapped from.
+      disableUser: jest.fn().mockResolvedValue(undefined),
+      syncUserRole: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<KeycloakAdminService>;
+
+    service = new UserService(keycloakAdmin, makeOutboxDouble().service);
+    prismaMock = (service as unknown as { prisma: jest.Mocked<PrismaClient> }).prisma;
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // ─── listUsers ───────────────────────────────────────────────────────────
+
+  describe('listUsers', () => {
+    it('returns paginated users with total count', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ ...mockUserRow, role: CosRole.SITE_ENGINEER }]) // data rows
+        .mockResolvedValueOnce([{ count: BigInt(1) }]); // COUNT(*)
+
+      const result = await service.listUsers(TENANT_ID, { limit: 50, offset: 0 });
+
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]!.role).toBe(CosRole.SITE_ENGINEER);
+      expect(result.pagination).toEqual({ limit: 50, offset: 0, page: 1, total: 1 });
+    });
+
+    it('calculates correct page number for non-zero offset', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ ...mockUserRow, role: CosRole.SITE_WORKER }])
+        .mockResolvedValueOnce([{ count: BigInt(25) }]);
+
+      const result = await service.listUsers(TENANT_ID, { limit: 10, offset: 10 });
+
+      expect(result.pagination.page).toBe(2);
+      expect(result.pagination.total).toBe(25);
+    });
+
+    it('returns empty data array and zero total when tenant has no users', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([]) // no rows
+        .mockResolvedValueOnce([{ count: BigInt(0) }]); // count
+
+      const result = await service.listUsers(TENANT_ID, { limit: 50, offset: 0 });
+
+      expect(result.data).toEqual([]);
+      expect(result.pagination.total).toBe(0);
+    });
+
+    it('returns total=0 when count query returns empty array (covers countResult[0]?.count ?? 0 false branch)', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([]) // no rows
+        .mockResolvedValueOnce([]); // count query returns empty — countResult[0] undefined
+
+      const result = await service.listUsers(TENANT_ID, { limit: 50, offset: 0 });
+
+      expect(result.pagination.total).toBe(0);
+    });
+  });
+
+  // ─── createUser ──────────────────────────────────────────────────────────
+
+  describe('createUser', () => {
+    function mockCreateSetup(userRow: typeof mockUserRow) {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([]); // conflict guard
+      (prismaMock.$transaction as jest.Mock).mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            $queryRaw: jest
+              .fn()
+              .mockResolvedValueOnce([userRow]) // INSERT users → RETURNING
+              .mockResolvedValueOnce([{}]), // INSERT memberships
+          };
+          return fn(tx);
+        },
+      );
+    }
+
+    it('creates Path A user (phone) via KeycloakAdminService.provisionPhoneUser', async () => {
+      mockCreateSetup(mockUserRow);
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      const result = await service.createUser(dto, TENANT_ID, ACTOR_ID);
+
+      expect(keycloakAdmin.provisionPhoneUser).toHaveBeenCalledWith(
+        '+66812345678',
+        'สมชาย',
+        REALM,
+        TENANT_ID,
+        expect.any(String), // userIdPlaceholder UUID
+        CosRole.SITE_ENGINEER,
+      );
+      expect(result.user_id).toBe(USER_ID);
+      expect(result.role).toBe(CosRole.SITE_ENGINEER);
+    });
+
+    it('creates Path B user (email) via KeycloakAdminService.createEmailUser', async () => {
+      const emailRow = { ...mockUserRow, email: 'w@a.com', keycloak_user_id: KC_USER_ID };
+      mockCreateSetup(emailRow);
+
+      const dto = { display_name: 'วิชัย', email: 'w@a.com', role: CosRole.PROJECT_MANAGER };
+      const result = await service.createUser(dto, TENANT_ID, ACTOR_ID);
+
+      expect(keycloakAdmin.createEmailUser).toHaveBeenCalledWith(
+        'w@a.com',
+        'วิชัย',
+        REALM,
+        TENANT_ID,
+        expect.any(String),
+        CosRole.PROJECT_MANAGER,
+      );
+      expect(result.role).toBe(CosRole.PROJECT_MANAGER);
+    });
+
+    it('rolls back Keycloak user when COS DB transaction fails', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([]); // conflict guard
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(new Error('DB error'));
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow('DB error');
+      expect(keycloakAdmin.deleteUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+    });
+
+    // The conflict guard above is a SELECT followed by an INSERT, so two concurrent creates on one
+    // phone number both read "no existing row". `users_phone_number_key` (migration 20260819000001)
+    // is what actually settles it — and the loser has to look identical to the caller that lost the
+    // race by a millisecond, i.e. a 409, not a 500 out of the driver.
+    it('maps the phone-number unique violation to the same 409 as the pre-flight conflict guard', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([]); // conflict guard — the racing create has not committed yet
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(
+        new Error('duplicate key value violates unique constraint "users_phone_number_key"'),
+      );
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(ConflictException);
+      // The Keycloak account still has to go — the COS row it belonged to was never written.
+      expect(keycloakAdmin.deleteUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+    });
+
+    // Prisma normally rejects with an Error, but the driver adapter can surface a raw value. That must
+    // not throw on `.message` inside the error handler — the rollback above it still has to run.
+    it('handles a non-Error rejection without breaking the Keycloak rollback', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce('connection reset');
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toBe('connection reset');
+      expect(keycloakAdmin.deleteUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+    });
+
+    // The translation is scoped to Path A. A Path B (email) create cannot hit the phone-number index
+    // at all, so a failure there is always a real error — never "this user already exists".
+    it('leaves a Path B failure untranslated even if the message mentions the phone index', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(
+        new Error('duplicate key value violates unique constraint "users_phone_number_key"'),
+      );
+
+      const dto = {
+        display_name: 'สมชาย',
+        email: 'somchai@example.com',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        'users_phone_number_key',
+      );
+    });
+
+    // Only the phone-number constraint is translated. Any other failure is a real error and must not
+    // be disguised as "this user already exists", which would send an operator looking for a row that
+    // is not there.
+    it('does not disguise an unrelated DB failure as a conflict', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(new Error('deadlock detected'));
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        'deadlock detected',
+      );
+    });
+
+    it('logs error but still throws original error when Keycloak deleteUser also fails (covers rollback .catch branch)', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([]); // conflict guard
+      (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(new Error('DB error'));
+      keycloakAdmin.deleteUser.mockRejectedValueOnce(new Error('Keycloak unreachable'));
+
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow('DB error');
+      expect(keycloakAdmin.deleteUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+    });
+
+    // Rule 41 review, 2026-09-14: the Path B guard compared keycloak_user_id with the email and never
+    // matched. It now compares the email, case-insensitively, among accounts of tenants on the same realm.
+    it('Path B guard looks the EMAIL up on this realm, and refuses a taken one with 409', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([{ user_id: 'someone-else' }]); // conflict guard
+      await expect(
+        service.createUser(
+          { display_name: 'วิชัย', email: 'W@A.com', role: CosRole.PROJECT_MANAGER },
+          TENANT_ID,
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow('User with this identity already exists');
+      const guard = (prismaMock.$queryRaw as jest.Mock).mock.calls[1] as unknown[];
+      const sql = (guard[0] as string[]).join('?');
+      expect(sql).toMatch(/lower\(u\.email\) = lower\(\?\)/);
+      expect(sql).toMatch(/t\.keycloak_realm = \?/);
+      expect(guard.slice(1)).toEqual(['W@A.com', REALM]);
+      expect(keycloakAdmin.createEmailUser).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'Path B',
+        { display_name: 'วิชัย', email: 'w@a.com', role: CosRole.PROJECT_MANAGER },
+        'createEmailUser',
+      ],
+      [
+        'Path A',
+        { display_name: 'สมชาย', phone_number: '+66812345678', role: CosRole.SITE_ENGINEER },
+        'provisionPhoneUser',
+      ],
+    ] as const)(
+      '%s: a Keycloak 409 becomes the same 409 — nothing says which tenant holds the identity',
+      async (_label, dto, method) => {
+        (prismaMock.$queryRaw as jest.Mock)
+          .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+          .mockResolvedValueOnce([]); // conflict guard — not visible to the database
+        (keycloakAdmin[method] as jest.Mock).mockRejectedValueOnce(
+          Object.assign(new Error('Request failed with status 409'), { response: { status: 409 } }),
+        );
+        await expect(service.createUser(dto as never, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+          new ConflictException('User with this identity already exists'),
+        );
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rethrows any other Keycloak failure unchanged', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      keycloakAdmin.createEmailUser.mockRejectedValueOnce(
+        Object.assign(new Error('Keycloak down'), { response: { status: 503 } }),
+      );
+      await expect(
+        service.createUser(
+          { display_name: 'วิชัย', email: 'w@a.com', role: CosRole.PROJECT_MANAGER },
+          TENANT_ID,
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow('Keycloak down');
+    });
+
+    it('rethrows a thrown null from Keycloak unchanged', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      keycloakAdmin.provisionPhoneUser.mockRejectedValueOnce(null);
+      await expect(
+        service.createUser(
+          { display_name: 'สมชาย', phone_number: '+66812345678', role: CosRole.SITE_ENGINEER },
+          TENANT_ID,
+          ACTOR_ID,
+        ),
+      ).rejects.toBeNull();
+    });
+
+    it('throws BadRequestException when neither phone_number nor email provided', async () => {
+      const dto = { display_name: 'Test', role: CosRole.SITE_ENGINEER };
+      await expect(service.createUser(dto as never, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('throws BadRequestException when both phone_number and email provided', async () => {
+      const dto = {
+        display_name: 'Test',
+        phone_number: '+66812345678',
+        email: 'a@b.com',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('throws ConflictException when identity already exists', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([{ user_id: USER_ID }]); // conflict guard
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(ConflictException);
+    });
+
+    it('throws BadRequestException when tenant is not found or inactive (covers !tenant branch)', async () => {
+      // The tenant lookup runs first, so an unknown tenant is refused before any identity is probed.
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]); // tenant lookup — not found
+      const dto = {
+        display_name: 'สมชาย',
+        phone_number: '+66812345678',
+        role: CosRole.SITE_ENGINEER,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('rejects assigning SYSTEM_ADMIN — a tenant admin must not mint a cross-tenant platform admin', async () => {
+      // Privilege-escalation guard (spec §6.7): SYSTEM_ADMIN is validated by @IsEnum(CosRole) at the
+      // DTO but must never be tenant-assignable. Rejected before any Keycloak/DB write.
+      const dto = {
+        display_name: 'attacker',
+        phone_number: '+66812345678',
+        role: CosRole.SYSTEM_ADMIN,
+      };
+      await expect(service.createUser(dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(keycloakAdmin.provisionPhoneUser).not.toHaveBeenCalled();
+      expect(keycloakAdmin.createEmailUser).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── changeRole ──────────────────────────────────────────────────────────
+
+  describe('changeRole', () => {
+    it('updates membership role, re-syncs the Keycloak role attribute, and emits user.role_changed', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([
+          {
+            role: CosRole.SITE_ENGINEER,
+            keycloak_user_id: KC_USER_ID,
+            keycloak_realm: REALM,
+            email: 'wichai@acme.co.th',
+          },
+        ]) // SELECT membership + keycloak identifiers + email (the Path B guard reads it)
+        .mockResolvedValueOnce([{}]); // UPDATE
+
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.PROJECT_MANAGER }, TENANT_ID, ACTOR_ID),
+      ).resolves.toBeUndefined();
+
+      // Security review F2 — without this the JWT `role` claim keeps the OLD role forever, so a
+      // demotion never takes effect for anything reading the token.
+      expect(keycloakAdmin.syncUserRole).toHaveBeenCalledWith(
+        KC_USER_ID,
+        REALM,
+        CosRole.PROJECT_MANAGER,
+      );
+    });
+
+    it('throws NotFoundException when user not in tenant', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValue([]);
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.FINANCE }, TENANT_ID, ACTOR_ID),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    // PROMOTING A PHONE-ONLY ACCOUNT TO A PATH B ROLE USED TO LOCK THE PERSON OUT (TDD OQ-11).
+    //
+    // TENANT_ADMIN and FINANCE are denied on Path A at Keycloak itself (measured against 26.6.4), and
+    // a Path A account has `email = ''` with no way to add one — so the promotion left a person who
+    // could use neither path, with no error naming the cause. The role change succeeded, the Keycloak
+    // attribute was dutifully updated, and the account simply went dark at their next login.
+    it('refuses to promote a phone-only account to TENANT_ADMIN', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        {
+          role: CosRole.SITE_ENGINEER,
+          keycloak_user_id: KC_USER_ID,
+          keycloak_realm: REALM,
+          email: '', // Path A account — one account carries one identifier (§5.4.4)
+        },
+      ]);
+
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.TENANT_ADMIN }, TENANT_ID, ACTOR_ID),
+      ).rejects.toThrow(BadRequestException);
+
+      // Nothing was written anywhere: no membership UPDATE, and no Keycloak attribute change that
+      // would leave the two stores disagreeing about the role.
+      expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(keycloakAdmin.syncUserRole).not.toHaveBeenCalled();
+    });
+
+    it('refuses the same promotion to FINANCE', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        {
+          role: CosRole.SITE_WORKER,
+          keycloak_user_id: KC_USER_ID,
+          keycloak_realm: REALM,
+          email: '',
+        },
+      ]);
+
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.FINANCE }, TENANT_ID, ACTOR_ID),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('allows the promotion when the account has an email to sign in with', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([
+          {
+            role: CosRole.PROJECT_MANAGER,
+            keycloak_user_id: KC_USER_ID,
+            keycloak_realm: REALM,
+            email: 'wichai@acme.co.th',
+          },
+        ])
+        .mockResolvedValueOnce([{}]);
+
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.TENANT_ADMIN }, TENANT_ID, ACTOR_ID),
+      ).resolves.toBeUndefined();
+      expect(keycloakAdmin.syncUserRole).toHaveBeenCalledWith(
+        KC_USER_ID,
+        REALM,
+        CosRole.TENANT_ADMIN,
+      );
+    });
+
+    // The guard is about the destination role, not about phones. Moving a phone-only account between
+    // NON-privileged roles is ordinary and must stay possible — a site engineer becoming a safety
+    // officer does not need an email.
+    it('leaves a phone-only account free to move between non-privileged roles', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([
+          {
+            role: CosRole.SITE_WORKER,
+            keycloak_user_id: KC_USER_ID,
+            keycloak_realm: REALM,
+            email: '',
+          },
+        ])
+        .mockResolvedValueOnce([{}]);
+
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.SITE_ENGINEER }, TENANT_ID, ACTOR_ID),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects changing a role to SYSTEM_ADMIN — privilege-escalation guard', async () => {
+      // Rejected before the membership lookup/update, so no DB write occurs.
+      await expect(
+        service.changeRole(USER_ID, { role: CosRole.SYSTEM_ADMIN }, TENANT_ID, ACTOR_ID),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── deactivateUser ──────────────────────────────────────────────────────
+
+  describe('deactivateUser', () => {
+    it('deactivates an active user AND disables the Keycloak account', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID }]) // UPDATE ... RETURNING
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]); // SELECT realm
+
+      await expect(service.deactivateUser(USER_ID, TENANT_ID, ACTOR_ID)).resolves.toBeUndefined();
+
+      // Security review F1 — the COS flag alone revoked nothing: the Keycloak account stayed enabled,
+      // so the user could log in again and be issued a brand-new valid token indefinitely.
+      expect(keycloakAdmin.disableUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+    });
+
+    it('throws NotFoundException when user not found or already inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValue([]);
+      await expect(service.deactivateUser(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(keycloakAdmin.disableUser).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when the tenant row is missing or inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID }])
+        .mockResolvedValueOnce([]); // no active tenant
+      await expect(service.deactivateUser(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  // ─── outbox semantics (§35.13 ESC-13) ────────────────────────────────────
+
+  describe('outbox writes', () => {
+    it('writes identity.user.created.v1 inside the user + membership transaction', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]) // tenant lookup
+        .mockResolvedValueOnce([]); // conflict guard
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValueOnce([mockUserRow]).mockResolvedValueOnce([{}]),
+      };
+      (prismaMock.$transaction as jest.Mock).mockImplementation(
+        async (fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      );
+
+      await service.createUser(
+        { display_name: 'สมชาย', phone_number: '+66812345678', role: CosRole.SITE_ENGINEER },
+        TENANT_ID,
+        ACTOR_ID,
+      );
+
+      // Same `tx` handle as the INSERTs ⇒ the event cannot survive a rollback.
+      expect(OutboxPublisher.write).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          event_type: 'identity.user.created.v1',
+          tenant_id: TENANT_ID,
+          actor_id: ACTOR_ID,
+          payload: {
+            tenant_id: TENANT_ID,
+            user_id: USER_ID,
+            email: '',
+            role: CosRole.SITE_ENGINEER,
+          },
+        }),
+      );
+    });
+
+    it('rolls the Keycloak user back and emits nothing when the transaction fails', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }])
+        .mockResolvedValueOnce([]);
+      (prismaMock.$transaction as jest.Mock).mockRejectedValue(new Error('duplicate key'));
+
+      await expect(
+        service.createUser(
+          { display_name: 'สมชาย', phone_number: '+66812345678', role: CosRole.SITE_ENGINEER },
+          TENANT_ID,
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow('duplicate key');
+
+      expect(keycloakAdmin.deleteUser).toHaveBeenCalledWith(KC_USER_ID, REALM);
+      expect(OutboxPublisher.write).not.toHaveBeenCalled();
+    });
+
+    it('writes identity.user.role_changed.v1 inside the role UPDATE transaction', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([{ role: CosRole.SITE_ENGINEER }]);
+      const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+      (prismaMock.$transaction as jest.Mock).mockImplementation(
+        async (fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      );
+
+      await service.changeRole(USER_ID, { role: CosRole.PROJECT_MANAGER }, TENANT_ID, ACTOR_ID);
+
+      expect(tx.$queryRaw).toHaveBeenCalled();
+      expect(OutboxPublisher.write).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          event_type: 'identity.user.role_changed.v1',
+          payload: {
+            tenant_id: TENANT_ID,
+            user_id: USER_ID,
+            old_role: CosRole.SITE_ENGINEER,
+            new_role: CosRole.PROJECT_MANAGER,
+          },
+        }),
+      );
+    });
+  });
+  // ─── publishEvent error handling ─────────────────────────────────────────
+});
+
+describe('UserService onModuleDestroy', () => {
+  it('disconnects Prisma on shutdown', async () => {
+    const svc = new UserService({} as never, makeOutboxDouble().service);
+    await svc.onModuleDestroy();
+    expect(
+      (svc as unknown as { prisma: { $disconnect: jest.Mock } }).prisma.$disconnect,
+    ).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Self-service reads/writes. Unlike the rest of this service these are not TENANT_ADMIN-gated, so
+// the tenant+user scoping in the SQL is the only thing keeping a caller on their own row.
+describe('UserService self-service', () => {
+  let service: UserService;
+  let prismaMock: jest.Mocked<PrismaClient>;
+
+  beforeEach(() => {
+    service = new UserService({} as never, makeOutboxDouble().service);
+    prismaMock = (service as unknown as { prisma: jest.Mocked<PrismaClient> }).prisma;
+  });
+
+  describe('getMe', () => {
+    it('returns the caller’s own row', async () => {
+      const me = { ...mockUserRow, role: CosRole.SITE_ENGINEER, employee_code: 'EMP-001' };
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([me]);
+
+      expect(await service.getMe(TENANT_ID, USER_ID)).toBe(me);
+    });
+
+    it('reads employee_code from workforce.workers with a LEFT join', async () => {
+      // An inner join would turn "no worker record" into "user not found" — a 404 on your own
+      // profile — and most accounts genuinely have none (1 of 19 workers is linked in the dev seed).
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([mockUserRow]);
+      await service.getMe(TENANT_ID, USER_ID);
+
+      const sql = (prismaMock.$queryRaw as jest.Mock).mock.calls[0]?.[0] as {
+        join(s: string): string;
+      };
+      const text = Array.isArray(sql) ? sql.join('?') : String(sql);
+      expect(text).toContain('LEFT JOIN workforce.workers');
+      expect(text).toContain('w.employee_code');
+      // Tenant-scoped as well as user-scoped: this client connects as the owning role, so the RLS
+      // policy on workforce.workers does not apply and the predicate here IS the isolation.
+      expect(text).toContain('w.tenant_id = u.tenant_id');
+    });
+
+    it('selects the employment columns the row type declares', async () => {
+      // `UserRow` declares `department` and `position`, and this SELECT is an explicit column list.
+      // getMe HAD ALREADY DRIFTED: it omitted `u.department` while the type promised it, so every
+      // caller's `me.department` was undefined and TypeScript could not say so — raw SQL is exactly
+      // where it cannot. Both are named here so the next column added does not repeat it (ADR-101).
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([mockUserRow]);
+      await service.getMe(TENANT_ID, USER_ID);
+
+      const sql = (prismaMock.$queryRaw as jest.Mock).mock.calls[0]?.[0];
+      const text = Array.isArray(sql) ? sql.join('?') : String(sql);
+      expect(text).toContain('u.department');
+      expect(text).toContain('u.position');
+    });
+
+    it('returns a null employee_code for an account with no worker record', async () => {
+      // The common case: office roles have no row in workforce.workers. It must read as "no code
+      // issued", never as a missing field the screen should hide.
+      const officeUser = { ...mockUserRow, employee_code: null };
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([officeUser]);
+
+      await expect(service.getMe(TENANT_ID, USER_ID)).resolves.toHaveProperty(
+        'employee_code',
+        null,
+      );
+    });
+
+    it('throws COS-USER-404 when the row is missing', async () => {
+      // A JWT whose user was deleted, or pointed at another tenant: not found, never someone else's row.
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]);
+
+      await expect(service.getMe(TENANT_ID, USER_ID)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('updateMyPhoto', () => {
+    it('writes the photo URL then returns the refreshed row', async () => {
+      const updated = {
+        ...mockUserRow,
+        photo_url: 'https://files/p.jpg',
+        role: CosRole.SITE_WORKER,
+      };
+      (prismaMock.$executeRaw as jest.Mock).mockResolvedValueOnce(1);
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([updated]);
+
+      const r = await service.updateMyPhoto(TENANT_ID, USER_ID, 'https://files/p.jpg');
+
+      expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(r).toBe(updated);
+    });
+
+    it('accepts null to clear the photo and fall back to initials', async () => {
+      const cleared = { ...mockUserRow, photo_url: null, role: CosRole.SITE_WORKER };
+      (prismaMock.$executeRaw as jest.Mock).mockResolvedValueOnce(1);
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([cleared]);
+
+      const r = await service.updateMyPhoto(TENANT_ID, USER_ID, null);
+
+      expect(r.photo_url).toBeNull();
+    });
+
+    it('propagates the 404 when the row vanished before the re-read', async () => {
+      (prismaMock.$executeRaw as jest.Mock).mockResolvedValueOnce(0);
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]);
+
+      await expect(service.updateMyPhoto(TENANT_ID, USER_ID, null)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+});
+
+// ─── getUserRoles ──────────────────────────────────────────────────────────
+// Primary role from tenant_memberships + additional roles from user_additional_roles (union model).
+describe('UserService getUserRoles', () => {
+  let service: UserService;
+  let prismaMock: jest.Mocked<PrismaClient>;
+
+  beforeEach(() => {
+    service = new UserService({} as never, makeOutboxDouble().service);
+    prismaMock = (service as unknown as { prisma: jest.Mocked<PrismaClient> }).prisma;
+  });
+
+  it('returns the primary role plus mapped additional roles', async () => {
+    (prismaMock.$queryRaw as jest.Mock)
+      .mockResolvedValueOnce([{ role: CosRole.SITE_ENGINEER }]) // SELECT membership
+      .mockResolvedValueOnce([{ role: CosRole.FINANCE }, { role: CosRole.SITE_WORKER }]); // additional
+
+    const result = await service.getUserRoles(USER_ID, TENANT_ID);
+
+    expect(result).toEqual({
+      primary_role: CosRole.SITE_ENGINEER,
+      additional_roles: [CosRole.FINANCE, CosRole.SITE_WORKER],
+    });
+  });
+
+  it('returns an empty additional_roles array when the user has no extra roles', async () => {
+    (prismaMock.$queryRaw as jest.Mock)
+      .mockResolvedValueOnce([{ role: CosRole.PROJECT_MANAGER }]) // SELECT membership
+      .mockResolvedValueOnce([]); // no additional roles
+
+    const result = await service.getUserRoles(USER_ID, TENANT_ID);
+
+    expect(result).toEqual({ primary_role: CosRole.PROJECT_MANAGER, additional_roles: [] });
+  });
+
+  it('throws NotFoundException when the user has no membership in the tenant', async () => {
+    (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]); // no membership
+
+    await expect(service.getUserRoles(USER_ID, TENANT_ID)).rejects.toThrow(NotFoundException);
+  });
+});
+
+// ─── setUserRoles ──────────────────────────────────────────────────────────
+// Primary lands on tenant_memberships; additional roles (deduped, primary excluded) replace
+// user_additional_roles. Emits role_changed only when the primary actually changes.
+describe('UserService setUserRoles', () => {
+  let service: UserService;
+  let prismaMock: jest.Mocked<PrismaClient>;
+  let outboxMock: { publish: jest.Mock };
+  let keycloakAdmin: jest.Mocked<KeycloakAdminService>;
+
+  beforeEach(() => {
+    keycloakAdmin = {
+      syncUserRole: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<KeycloakAdminService>;
+    service = new UserService(keycloakAdmin, makeOutboxDouble().service);
+    prismaMock = (service as unknown as { prisma: jest.Mocked<PrismaClient> }).prisma;
+    outboxMock = (
+      service as unknown as {
+        outbox: { publish: jest.Mock };
+      }
+    ).outbox;
+  });
+
+  // The whole role change runs inside one $transaction — mirror that here so the tx-scoped calls are
+  // observable. `membership` is what the leading SELECT ... FOR UPDATE returns ([] = no membership).
+  // The row now also carries the Keycloak identifiers used for the post-commit attribute sync (F2).
+  function mockRoleTx(membership: Array<{ role: CosRole }>): jest.Mock {
+    const txQueryRaw = jest.fn().mockResolvedValue([]);
+    txQueryRaw.mockResolvedValueOnce(
+      membership.map((m) => ({
+        ...m,
+        keycloak_user_id: KC_USER_ID,
+        keycloak_realm: REALM,
+      })),
+    ); // SELECT membership FOR UPDATE
+    (prismaMock.$transaction as jest.Mock).mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn({ $queryRaw: txQueryRaw }),
+    );
+    return txQueryRaw;
+  }
+
+  it('updates the primary role, replaces additional roles (deduped + primary filtered), and emits role_changed when the primary changes', async () => {
+    const txQueryRaw = mockRoleTx([{ role: CosRole.SITE_ENGINEER }]);
+
+    const dto = {
+      primary_role: CosRole.PROJECT_MANAGER,
+      // duplicate FINANCE is deduped; PROJECT_MANAGER equals the primary and is filtered out →
+      // effective additional = [FINANCE], bound as a single array parameter.
+      additional_roles: [CosRole.FINANCE, CosRole.FINANCE, CosRole.PROJECT_MANAGER],
+    };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, ACTOR_ID)).resolves.toBeUndefined();
+
+    // SELECT membership + UPDATE primary + DELETE additional + one set-based INSERT
+    expect(txQueryRaw).toHaveBeenCalledTimes(4);
+    // Every write went through the transaction, never straight at the client.
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    // oldRole (SITE_ENGINEER) !== primary (PROJECT_MANAGER) → role_changed published
+    expect(outboxMock.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit role_changed when the primary is unchanged (actor "system" → assigned_by null)', async () => {
+    const txQueryRaw = mockRoleTx([{ role: CosRole.SITE_ENGINEER }]);
+
+    const dto = { primary_role: CosRole.SITE_ENGINEER, additional_roles: [] };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, 'system')).resolves.toBeUndefined();
+
+    // Still 4 statements: unnest() over an empty array inserts zero rows, so there is no empty-case
+    // branch to skip — the INSERT is issued unconditionally.
+    expect(txQueryRaw).toHaveBeenCalledTimes(4);
+    // oldRole === primary → no event
+    expect(outboxMock.publish).not.toHaveBeenCalled();
+  });
+
+  it('throws NotFoundException when the user has no membership (falsy actorId → assigned_by null)', async () => {
+    const txQueryRaw = mockRoleTx([]); // no membership
+
+    const dto = { primary_role: CosRole.SITE_ENGINEER, additional_roles: [CosRole.FINANCE] };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, '')).rejects.toThrow(
+      NotFoundException,
+    );
+    // Aborted on the SELECT — nothing was mutated, so the rollback has nothing to undo.
+    expect(txQueryRaw).toHaveBeenCalledTimes(1);
+    expect(outboxMock.publish).not.toHaveBeenCalled();
+  });
+
+  it('publishes no role_changed event when the transaction fails (all-or-nothing)', async () => {
+    (prismaMock.$transaction as jest.Mock).mockRejectedValueOnce(new Error('DB error'));
+
+    const dto = { primary_role: CosRole.PROJECT_MANAGER, additional_roles: [CosRole.FINANCE] };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+      'DB error',
+    );
+    expect(outboxMock.publish).not.toHaveBeenCalled();
+  });
+
+  it('rejects a SYSTEM_ADMIN primary role before any DB write (privilege-escalation guard)', async () => {
+    const dto = { primary_role: CosRole.SYSTEM_ADMIN, additional_roles: [] };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects SYSTEM_ADMIN in additional_roles before any DB write', async () => {
+    const dto = { primary_role: CosRole.SITE_ENGINEER, additional_roles: [CosRole.SYSTEM_ADMIN] };
+
+    await expect(service.setUserRoles(USER_ID, dto, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+// ─── resetPassword / sendPasswordResetLink ─────────────────────────────────
+// Admin-triggered password resets. resetPassword hands back a one-time temporary password;
+// sendPasswordResetLink emails a single-use action-token link. Both emit password_reset.v1.
+describe('UserService password resets', () => {
+  let service: UserService;
+  let prismaMock: jest.Mocked<PrismaClient>;
+  let keycloakAdmin: jest.Mocked<KeycloakAdminService>;
+  let outboxMock: { publish: jest.Mock };
+
+  beforeEach(() => {
+    keycloakAdmin = {
+      setTemporaryPassword: jest.fn().mockResolvedValue(undefined),
+      sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<KeycloakAdminService>;
+    service = new UserService(keycloakAdmin, makeOutboxDouble().service);
+    prismaMock = (service as unknown as { prisma: jest.Mocked<PrismaClient> }).prisma;
+    outboxMock = (
+      service as unknown as {
+        outbox: { publish: jest.Mock };
+      }
+    ).outbox;
+  });
+
+  describe('resetPassword', () => {
+    it('sets a generated temporary password on Keycloak and returns it once with the display name', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, display_name: 'สมชาย ใจดี' }]) // user
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]); // tenant
+
+      const result = await service.resetPassword(USER_ID, TENANT_ID, ACTOR_ID);
+
+      // generateTempPassword shape: 4 upper · 4 lower · 3 digit, hyphen-grouped.
+      expect(result.temporary_password).toMatch(/^[A-Z]{4}-[a-z]{4}-[0-9]{3}$/);
+      expect(result.display_name).toBe('สมชาย ใจดี');
+      // The plaintext returned is exactly what was pushed to Keycloak (temporary=true).
+      expect(keycloakAdmin.setTemporaryPassword).toHaveBeenCalledWith(
+        KC_USER_ID,
+        REALM,
+        result.temporary_password,
+      );
+      expect(outboxMock.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('stamps password_changed_at only after Keycloak has accepted the credential', async () => {
+      // The column is read as "a password was last set at least this recently" (MeRow), so the
+      // write must follow the Keycloak call, never precede it.
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, display_name: 'สมชาย ใจดี' }])
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]);
+      const order: string[] = [];
+      keycloakAdmin.setTemporaryPassword.mockImplementation(async () => {
+        order.push('keycloak');
+      });
+      (prismaMock.$executeRaw as jest.Mock).mockImplementation(async () => {
+        order.push('stamp');
+        return 1;
+      });
+
+      await service.resetPassword(USER_ID, TENANT_ID, ACTOR_ID);
+
+      expect(order).toEqual(['keycloak', 'stamp']);
+      const sql = (prismaMock.$executeRaw as jest.Mock).mock.calls[0]?.[0];
+      const text = Array.isArray(sql) ? sql.join('?') : String(sql);
+      expect(text).toContain('password_changed_at = now()');
+    });
+
+    it('does not stamp password_changed_at when Keycloak refuses the credential', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, display_name: 'สมชาย ใจดี' }])
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]);
+      keycloakAdmin.setTemporaryPassword.mockRejectedValueOnce(new Error('Keycloak unreachable'));
+
+      await expect(service.resetPassword(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        'Keycloak unreachable',
+      );
+      expect(prismaMock.$executeRaw).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the user is not found (or inactive) in the tenant', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]); // no user
+
+      await expect(service.resetPassword(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(keycloakAdmin.setTemporaryPassword).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when the tenant is not found or inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, display_name: 'สมชาย ใจดี' }]) // user
+        .mockResolvedValueOnce([]); // tenant not found
+
+      await expect(service.resetPassword(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(keycloakAdmin.setTemporaryPassword).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sendPasswordResetLink', () => {
+    it('sends a 15-minute reset email via Keycloak and returns the target email', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, email: 'w@a.com' }]) // user
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]); // tenant
+
+      const result = await service.sendPasswordResetLink(USER_ID, TENANT_ID, ACTOR_ID);
+
+      expect(result).toEqual({ email: 'w@a.com' });
+      expect(keycloakAdmin.sendPasswordResetEmail).toHaveBeenCalledWith(KC_USER_ID, REALM, 900);
+      expect(outboxMock.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws NotFoundException when the user is not found (or inactive) in the tenant', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]); // no user
+
+      await expect(service.sendPasswordResetLink(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when the user has no email on file (email null)', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        { keycloak_user_id: KC_USER_ID, email: null },
+      ]); // user with no email
+
+      await expect(service.sendPasswordResetLink(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when the tenant is not found or inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, email: 'w@a.com' }]) // user
+        .mockResolvedValueOnce([]); // tenant not found
+
+      await expect(service.sendPasswordResetLink(USER_ID, TENANT_ID, ACTOR_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  // The self-service twin of sendPasswordResetLink: same Keycloak action-token email, target taken
+  // from the JWT rather than a path parameter. The differences worth asserting are who the audit
+  // trail names, that a Path A account is REFUSED rather than quietly reported as sent, and that
+  // password_changed_at is NOT stamped — the flow finishes inside Keycloak and calls nothing back.
+  describe('requestMyPasswordResetEmail', () => {
+    it('sends a 15-minute link to the caller’s own address and names them as the actor', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, email: 'w@a.com' }]) // user
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]); // tenant
+
+      const result = await service.requestMyPasswordResetEmail(TENANT_ID, USER_ID);
+
+      expect(result).toEqual({ email: 'w@a.com' });
+      expect(keycloakAdmin.sendPasswordResetEmail).toHaveBeenCalledWith(KC_USER_ID, REALM, 900);
+      expect(outboxMock.publish).toHaveBeenCalledTimes(1);
+      // reset_by is the user themselves, and the method distinguishes this from the admin link so
+      // the audit trail can say who asked.
+      expect(outboxMock.publish.mock.calls[0]?.[0]).toMatchObject({
+        event_type: 'identity.user.password_reset.v1',
+        payload: {
+          tenant_id: TENANT_ID,
+          user_id: USER_ID,
+          reset_by: USER_ID,
+          method: 'self_service_email_link',
+        },
+      });
+    });
+
+    it('does not stamp password_changed_at — the flow completes inside Keycloak', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, email: 'w@a.com' }])
+        .mockResolvedValueOnce([{ keycloak_realm: REALM }]);
+
+      await service.requestMyPasswordResetEmail(TENANT_ID, USER_ID);
+
+      // Stamping on SEND would record a change the user may never finish making.
+      expect(prismaMock.$executeRaw).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException with COS-USER-404 when the caller’s row is gone or inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]); // no user
+
+      await expect(service.requestMyPasswordResetEmail(TENANT_ID, USER_ID)).rejects.toMatchObject({
+        response: { error: { code: 'COS-USER-404' } },
+      });
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Path A account (email null) with COS-AUTH-003 rather than reporting a send', async () => {
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        { keycloak_user_id: KC_USER_ID, email: null },
+      ]);
+
+      await expect(service.requestMyPasswordResetEmail(TENANT_ID, USER_ID)).rejects.toMatchObject({
+        response: {
+          error: { code: 'COS-AUTH-003', messageKey: 'user.password.pathAHasNoPassword' },
+        },
+      });
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+      expect(outboxMock.publish).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Path A account whose email column is empty or blank, not just null', async () => {
+      // provisionPhoneUser writes `email = ''`, not NULL — a null check alone would let a phone-only
+      // account through to Keycloak with an empty address.
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        { keycloak_user_id: KC_USER_ID, email: '   ' },
+      ]);
+
+      await expect(service.requestMyPasswordResetEmail(TENANT_ID, USER_ID)).rejects.toMatchObject({
+        response: { error: { code: 'COS-AUTH-003' } },
+      });
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when the tenant is not found or inactive', async () => {
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([{ keycloak_user_id: KC_USER_ID, email: 'w@a.com' }]) // user
+        .mockResolvedValueOnce([]); // tenant not found
+
+      await expect(service.requestMyPasswordResetEmail(TENANT_ID, USER_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(keycloakAdmin.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+  });
+});

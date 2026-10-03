@@ -1,0 +1,94 @@
+{
+  "expo": {
+    "name": "COS",
+    "slug": "cos",
+    "scheme": "cos",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.constructionos.cos",
+      "infoPlist": {
+        "UIBackgroundModes": ["fetch", "processing"]
+      }
+    },
+    "android": {
+      "package": "com.constructionos.cos",
+      "allowBackup": false,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1020"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      "@config-plugins/detox",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "2.1.20",
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "packagingOptions": {
+              "pickFirst": ["**/libc++_shared.so"]
+            }
+          },
+          "ios": {}
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Construction OS to access your camera to capture site photos.",
+          "microphonePermission": "Allow Construction OS to record audio for site voice notes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Construction OS to choose a profile photo from your library."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Construction OS to tag site reports with your location."
+        }
+      ],
+      "./plugins/withPodfileFixes",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-logo.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#020617"
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Construction OS to record audio for site voice notes."
+        }
+      ],
+      "expo-localization",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Construction OS to unlock the app with Face ID."
+        }
+      ],
+      "@react-native-community/datetimepicker"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

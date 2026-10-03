@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Every OpenAPI document must be structurally valid, under `recommended-strict` (redocly.yaml).
+#
+# WHY THIS EXISTS. On 2026-08-24 a validity pass found 155 problems across the committed documents
+# while `check-openapi-freshness.sh` — the only OpenAPI gate at the time — reported them all fresh.
+# Freshness answers "was this touched after its code"; it says nothing about whether the file means
+# what it appears to mean. The 155 included:
+#
+#   102 × `nullable: true`  — OpenAPI 3.0 syntax in files declaring 3.1, where the keyword was
+#                             REMOVED. A 3.1 validator does not warn; it treats it as unknown and
+#                             the field as NON-nullable, so a generated client rejects a null the
+#                             API really sends.
+#    30 × dangling $ref     — site-ops.openapi.yaml had its shared `responses` block nested under
+#                             `paths:` instead of `components:`, so `#/components/responses/…`
+#                             resolved to nothing. Every reference in the file, since it was written.
+#    38 × no security       — finance.openapi.yaml declared no securitySchemes at all: nothing in it
+#                             said the API needs a token.
+#    16 × missing description on a response, which is a REQUIRED field.
+#
+# WARNINGS ARE FAILURES here (product-owner decision, 2026-08-24). `recommended-strict` promotes the
+# recommended ruleset to error severity, so redocly's own exit status carries the verdict and this
+# script does not have to parse output to decide.
+#
+# THE ONE EXCEPTION, and it is one file wide: digital-twin.openapi.yaml is linted with
+# `no-unused-components` skipped. Its `StateSource` enum is unused in that document and real
+# everywhere else — `digital_twin.twin_states.source` and `twin.state.updated.v1` both have it —
+# because Phase 24 has no backend module yet (§14.3: "not created before Phase 24 begins").
+# Deleting vocabulary out of a contract that has not shipped is not a fix.
+#
+# Two rules are OFF in redocly.yaml rather than satisfied — `info-license` and `no-ambiguous-paths`.
+# The reasoning is recorded there, next to the switch.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+echo "==> OpenAPI document validity (redocly, recommended-strict)"
+
+# NO `mapfile` AND NO `declare -A` IN THIS FILE. Both are bash 4; `#!/usr/bin/env bash` resolves
+# to /bin/bash 3.2.57 on macOS, which is where `verify-before-push.sh` runs this. The gate died on
+# line 1 of its own work there — "mapfile: command not found" — so it reported FAIL on every local
+# push while passing in CI. A pre-push gate that cannot run before a push is not a gate.
+ALL=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && ALL+=("$f")
+done < <(ls docs/api/*.openapi.yaml)
+if [[ ${#ALL[@]} -eq 0 ]]; then
+  echo "  ✗ no OpenAPI documents found under docs/api/ — the glob is wrong, not the repository"
+  exit 1
+fi
+
+# PER-FILE EXCEPTIONS. Each entry is one document and the one rule it is excused from, with the
+# reason recorded beside it. Nothing else is skipped, and the list is deliberately awkward to grow.
+#
+#   digital-twin  no-unused-components
+#     `StateSource` is unused in that document and real everywhere else — see the header above.
+#
+#   credential    operation-4xx-response
+#     `GET /health` on credential-service genuinely returns no 4xx. `isPublicPath` exempts exactly
+#     this route from auth, so no 401 is reachable, and it is registered BEFORE the rate limiter so
+#     no 429 is either — deliberately, because a throttled liveness probe fails a healthy container
+#     under exactly the load that makes it matter. Every other route in that document carries a 429.
+#     The only ways to satisfy the rule here are to invent a status the service never sends or to
+#     delete a route that exists; redocly.yaml states the principle: a gate that is passed by
+#     inventing is worse than no gate.
+#
+# One entry per line, "<document base name> <the single rule it is excused from>". This was an
+# associative array until 2026-09-04; the list and its meaning are unchanged, only the container.
+# A plain array iterates in source order, so the output is now deterministic as well as portable —
+# `${!SKIP_RULE[@]}` had no defined order.
+SKIP_RULE_ENTRIES=(
+  "digital-twin no-unused-components"
+  "credential operation-4xx-response"
+)
+
+# Prints the rule this document is excused from and returns 0, or returns 1 if it is not excepted.
+skip_rule_for() {
+  local entry
+  for entry in "${SKIP_RULE_ENTRIES[@]}"; do
+    if [[ "${entry%% *}" == "$1" ]]; then
+      printf '%s' "${entry#* }"
+      return 0
+    fi
+  done
+  return 1
+}
+
+STRICT=()
+for f in "${ALL[@]}"; do
+  base="$(basename "$f" .openapi.yaml)"
+  skip_rule_for "$base" >/dev/null || STRICT+=("$f")
+done
+
+FAILED=0
+
+# Everything except the excepted files, with no rule skipped.
+if ! npx --no-install redocly lint "${STRICT[@]}"; then
+  FAILED=1
+fi
+
+# Each excepted file on its own, with its single documented skip.
+for entry in "${SKIP_RULE_ENTRIES[@]}"; do
+  base="${entry%% *}"
+  rule="${entry#* }"
+  doc="docs/api/${base}.openapi.yaml"
+  if [[ ! -f "$doc" ]]; then
+    echo "  ✗ $doc is excused from $rule but does not exist — stale exception"
+    FAILED=1
+    continue
+  fi
+  if ! npx --no-install redocly lint "$doc" --skip-rule "$rule"; then
+    FAILED=1
+  fi
+done
+
+if [[ $FAILED -ne 0 ]]; then
+  echo ""
+  echo "  ✗ at least one document is invalid. Warnings count as failures here — see redocly.yaml"
+  echo "    for the two rules that are deliberately off and why."
+  exit 1
+fi
+
+echo "  ✓ ${#ALL[@]} documents valid, warnings included"

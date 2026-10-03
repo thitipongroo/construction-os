@@ -1,0 +1,365 @@
+openapi: 3.1.0
+info:
+  title: Notification Service API
+  version: 1.0.0
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Phase 20 — Multi-channel notification service.
+    Channels: IN_APP (SSE), EMAIL (SendGrid), LINE (Messaging API), Expo Push.
+    All endpoints require a valid JWT. tenant_id is resolved from the token.
+
+    **Reviewed 2026-08-31** against `backend/src/modules/notification/` at the origin/develop merge.
+    The module changed only where the package restructure moved `JwtAuthGuard` from
+    `modules/identity/` to `shared/`, plus consumer-side routing for the new
+    `safety.compliance.failed.v1`. No route, parameter, request body or response shape moved. This
+    line records the comparison the freshness gate asks for, which compares commit timestamps and
+    cannot tell an import move from an API change.
+servers:
+  - url: /api/v1
+tags:
+  - name: notifications
+    description: In-app notifications, preferences, push token registration, SSE stream
+
+paths:
+  /notifications:
+    get:
+      operationId: getNotifications
+      tags: [notifications]
+      summary: List my notifications (paginated)
+      security:
+        - bearerAuth: []
+      parameters:
+        - {
+            name: page,
+            in: query,
+            required: false,
+            schema: { type: integer, default: 1, minimum: 1 },
+          }
+        - {
+            name: limit,
+            in: query,
+            required: false,
+            schema: { type: integer, default: 20, minimum: 1, maximum: 100 },
+          }
+      responses:
+        '200':
+          description: Paginated notification list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Notification'
+                  total:
+                    type: integer
+                    example: 42
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/{id}/read:
+    patch:
+      operationId: patchNotificationsByIdRead
+      tags: [notifications]
+      summary: Mark a notification as read
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204':
+          description: Marked as read
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /notifications/read-all:
+    patch:
+      operationId: patchNotificationsReadAll
+      tags: [notifications]
+      summary: Mark all my notifications as read
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Count of updated notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+                    example: 5
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/preferences:
+    get:
+      operationId: getNotificationsPreferences
+      tags: [notifications]
+      summary: Get my notification channel preferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of preference rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationPreference'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      operationId: patchNotificationsPreferences
+      tags: [notifications]
+      summary: Update my notification channel preferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePreferencesRequest'
+      responses:
+        '200':
+          description: Updated preference rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationPreference'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/device-token:
+    post:
+      operationId: postNotificationsDeviceToken
+      tags: [notifications]
+      summary: Register Expo push device token for push notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceTokenRequest'
+      responses:
+        '200':
+          description: Registered/updated device token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceToken'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/stream:
+    get:
+      operationId: getNotificationsStream
+      tags: [notifications]
+      summary: SSE stream of real-time in-app notifications (NOT WebSocket — spec §19.2)
+      description: |
+        Server-Sent Events endpoint. One event per notification.
+        Clients should reconnect on disconnect. Each event payload is a Notification object.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: One SSE event per notification; data is JSON-encoded Notification
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Notification:
+      type: object
+      properties:
+        notification_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        channel:
+          $ref: '#/components/schemas/NotificationChannel'
+        event_type:
+          type: string
+          example: site.inspection.failed.v1
+        subject:
+          type: [string, 'null']
+          example: Inspection Failed
+        body:
+          type: string
+          example: Inspection failed on project Alpha — please review.
+        status:
+          $ref: '#/components/schemas/NotificationStatus'
+        sent_at:
+          type: [string, 'null']
+          format: date-time
+        read_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationChannel:
+      type: string
+      enum: [IN_APP, EMAIL, LINE, SMS]
+
+    NotificationStatus:
+      type: string
+      enum: [PENDING, SENT, FAILED, READ]
+
+    NotificationPreference:
+      type: object
+      properties:
+        pref_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          example: site.inspection.failed.v1
+        channel:
+          $ref: '#/components/schemas/NotificationChannel'
+        is_enabled:
+          type: boolean
+
+    UpdatePreferencesRequest:
+      type: object
+      required: [preferences]
+      properties:
+        preferences:
+          type: array
+          maxItems: 500
+          description: |
+            One upsert per entry. The real ceiling is (event types × 4 channels) — a few hundred at
+            most — so anything past 500 is a malformed or hostile client rather than a preference set.
+          items:
+            type: object
+            required: [event_type, channel, is_enabled]
+            properties:
+              event_type:
+                type: string
+                example: site.inspection.failed.v1
+              channel:
+                $ref: '#/components/schemas/NotificationChannel'
+              is_enabled:
+                type: boolean
+        quiet_hours_start:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          example: '22:00'
+          description: |
+            Start of the quiet-hours window (§19.6). **Both bounds must be sent together** — the
+            stored window is only updated when start and end are both present and valid, because a
+            half-open window has no meaning and silently keeping the old other bound would produce a
+            window the user never asked for.
+
+            Quiet hours never suppress a critical safety notification: the exemption covers the
+            window and the per-channel disable alike, through one shared `isCriticalSafetyEvent()`
+            check.
+        quiet_hours_end:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          example: '07:00'
+          description: End of the quiet-hours window. See `quiet_hours_start`.
+
+    RegisterDeviceTokenRequest:
+      type: object
+      required: [push_token, platform]
+      properties:
+        push_token:
+          type: string
+          example: ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]
+        platform:
+          type: string
+          enum: [IOS, ANDROID, WEB]
+
+    DeviceToken:
+      type: object
+      properties:
+        token_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        push_token:
+          type: string
+          example: ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]
+        platform:
+          type: string
+          enum: [IOS, ANDROID, WEB]
+        created_at:
+          type: string
+          format: date-time
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              statusCode: { type: integer, example: 401 }
+              message: { type: string, example: Unauthorized }
+
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              statusCode: { type: integer, example: 400 }
+              message: { type: array, items: { type: string } }
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              statusCode: { type: integer, example: 404 }
+              message: { type: string, example: Not Found }

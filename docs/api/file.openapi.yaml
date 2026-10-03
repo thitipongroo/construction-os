@@ -1,0 +1,603 @@
+openapi: '3.1.0'
+info:
+  title: Construction OS — File Service
+  description: |
+    File upload, storage, retrieval, and soft-delete for all tenant files.
+    Phase 9 — File + Document System.
+    Runtime: Fastify (extracted for multipart throughput).
+
+    **Reviewed 2026-08-31** against the module's controllers at the origin/develop merge. The source
+    changed in that merge only where the package restructure moved import paths — `JwtAuthGuard` and
+    `JwtPayload` from `modules/identity/` to `shared/` — with no route, parameter, request body or
+    response shape altered. This line records the comparison the freshness gate asks for, which
+    compares commit timestamps and cannot tell an import move from an API change.
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  contact:
+    name: Construction OS Engineering
+
+servers:
+  - url: /api/v1
+    description: Current version — relative, so the document works behind whatever host serves it
+
+security:
+  - KongJWT: []
+
+components:
+  securitySchemes:
+    KongJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A bearer token, and it decides where the identity comes from — this service verifies it
+        itself rather than trusting a gateway to have done so.
+
+        **User token** — identity comes from the BACKEND (ADR-107): the service forwards the token to
+        `GET /api/v1/auth/identity` and uses its answer, because the token's claims are Keycloak user
+        attributes. A backend refusal is 401; a backend that cannot answer is 503 `COS-FILE-022`, never
+        the claims. The identity headers below may accompany it but may only AGREE with that answer; a
+        header naming a different tenant is a 401, not an override.
+
+        **Service token** — the caller is authenticated as the backend, acting on someone's behalf,
+        and all three identity headers are then REQUIRED. This path exists because the backend calls
+        this service from Temporal activities and Kafka consumers, which hold no user token to
+        forward. Sending the headers now costs a credential; before that, an unauthenticated pod in
+        the namespace could have sent `x-user-role: SYSTEM_ADMIN` with any tenant it liked.
+
+  parameters:
+    # Declared as PARAMETERS, not `components.headers` — that section is for headers a RESPONSE
+    # carries, and these travel on the request. They were sitting there unused and mislabelled
+    # "injected by Kong", which stopped being true when this service began verifying tokens itself.
+    XTenantId:
+      name: X-Tenant-ID
+      in: header
+      required: false
+      description: |
+        Required with a SERVICE token; with a user token it is optional and may only agree with the
+        claim. Disagreeing with it is a 401.
+      schema:
+        type: string
+        format: uuid
+    XUserId:
+      name: X-User-ID
+      in: header
+      required: false
+      description: Required with a SERVICE token — who the backend is acting for.
+      schema:
+        type: string
+        format: uuid
+    XUserRole:
+      name: X-User-Role
+      in: header
+      required: false
+      description: |
+        Required with a SERVICE token; the role the action runs under. Never consulted when a user
+        token is present — the claim wins.
+      schema:
+        type: string
+
+  schemas:
+    FileStatus:
+      type: string
+      enum: [PENDING_SCAN, CLEAN, QUARANTINED]
+      description: |
+        PENDING_SCAN — file stored, antivirus scan in progress
+        CLEAN        — scan completed, no threat found
+        QUARANTINED  — threat detected, file blocked
+
+    FileDto:
+      type: object
+      required:
+        [
+          file_id,
+          original_filename,
+          mime_type,
+          file_size_bytes,
+          file_status,
+          uploaded_by,
+          uploaded_at,
+        ]
+      properties:
+        file_id: { type: string, format: uuid }
+        original_filename: { type: string }
+        mime_type: { type: string }
+        file_size_bytes: { type: string, description: 'BIGINT as string' }
+        file_status: { $ref: '#/components/schemas/FileStatus' }
+        uploaded_by: { type: string, format: uuid }
+        uploaded_at: { type: string, format: date-time }
+        deleted_at: { type: [string, 'null'], format: date-time }
+
+    RetentionPolicy:
+      type: object
+      required: [policy_id, tenant_id, category, retention_days]
+      properties:
+        policy_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        category:
+          type: string
+          enum: [image, document, cad, video, archive]
+        retention_days: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UploadResponse:
+      type: object
+      required: [file_id, original_filename, mime_type, file_size_bytes, file_status, uploaded_at]
+      properties:
+        file_id: { type: string, format: uuid }
+        original_filename: { type: string }
+        mime_type: { type: string }
+        file_size_bytes: { type: string }
+        file_status: { $ref: '#/components/schemas/FileStatus' }
+        uploaded_at: { type: string, format: date-time }
+
+    SignedUrlResponse:
+      type: object
+      required: [url, expires_in_seconds]
+      properties:
+        url: { type: string, format: uri }
+        expires_in_seconds: { type: integer, example: 3600 }
+
+    ListFilesResponse:
+      type: object
+      required: [data, limit, offset]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/FileDto' } }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, traceId, timestamp]
+          properties:
+            code: { type: string, example: 'COS-FILE-005' }
+            message: { type: string }
+            traceId: { type: string }
+            timestamp: { type: string, format: date-time }
+
+paths:
+  # ── Photo annotations (§14 Files APIs; written 2026-08-24) ────────────────
+  /files/{fileId}/annotation:
+    get:
+      summary: Get a photo's annotation stroke list
+      description: |
+        Powers re-editing. Any role may read, which is why §14 can state the write set explicitly
+        without breaking the `writeNeverWiderThanRead` invariant.
+
+        **There is no REST write.** An annotation is written through `POST /api/v1/sync/push` with
+        `entity_type: photo_annotation`, like every other field-editable entity — a dedicated `PUT`
+        was considered and rejected as inconsistent with them (ADR-056; §14 Files APIs). The push
+        path runs the `version`-based `CONFLICT_FLAGGED` check: two people can mark up the same
+        photo offline, and neither auto-merging strokes nor last-write-wins is acceptable when each
+        is one person's reading of the same defect.
+      operationId: getFileAnnotation
+      tags: [annotations]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The stroke list and its `version`
+        '401':
+          description: Unauthenticated
+        '404':
+          description: No annotation on this file yet
+  /files/upload:
+    post:
+      operationId: uploadFile
+      summary: Upload a file
+      description: |
+        Accepts multipart/form-data upload. File is stored in MinIO immediately
+        (status: PENDING_SCAN), then scanned asynchronously by ClamAV.
+        Response is returned before scan completes.
+        Optional query params: entity_type, entity_id to associate with a business entity.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: query
+          name: entity_type
+          schema: { type: string }
+          description: e.g. "site_report", "purchase_order"
+        - in: query
+          name: entity_id
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: File stored (scan in progress)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResponse' }
+        '401':
+          description: Missing tenant headers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: Validation error (MIME type, size, extension)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: Upload failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /files/{fileId}/url:
+    get:
+      operationId: getSignedUrl
+      summary: Get a pre-signed download URL (TTL 1 hour)
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Signed URL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignedUrlResponse' }
+        '404':
+          description: File not found or deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: Failed to generate URL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /files/{fileId}/image:
+    get:
+      operationId: getFileImage
+      summary: Stream an image by a URL that does not expire
+      description: |
+        The permanent counterpart to `/files/{fileId}/url` (ADR-105), added for profile photos:
+        `platform.users.photo_url` stores a URL that has to outlive the one-hour presigned TTL, or
+        an avatar 403s the next time any screen draws it.
+
+        **Permanent, not public.** The authorisation is identical to the signed-URL route — a
+        verified bearer token, the caller's own tenant, and `file_status = CLEAN`. What moved is
+        where the credential lives: a presigned URL carries its own and therefore has to expire;
+        one that authenticates per request does not. This service has no unauthenticated route but
+        its two health probes.
+
+        The client must send the token with the image request (`apps/mobile
+        lib/fileImageSource.ts`), so such a URL pasted into a browser will not render.
+
+        **Images only** — anything else is `COS-FILE-020`. That keeps this from becoming a second
+        general download path beside the signed-URL route, and bounds the pod: an image caps at
+        20 MB where a DWG may be 200 MB.
+
+        Responses carry `Cache-Control: private, max-age=86400, immutable` and an ETag taken from
+        the stored SHA-256. `private` because the bytes belong to one tenant behind a bearer token;
+        `immutable` because a fresh upload gets a fresh id, so the bytes behind a given URL never
+        change.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The image bytes
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 'private, max-age=86400, immutable'
+            ETag:
+              schema: { type: string }
+              description: The stored SHA-256, quoted. Absent when no hash was recorded.
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        '401':
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: Not found in the caller's tenant, or deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: '`COS-FILE-016` — the antivirus scan has not cleared the file'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: '`COS-FILE-020` — the file is not an image'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: '`COS-FILE-021` — the object store could not be read'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /files/{fileId}:
+    get:
+      operationId: getFileMetadata
+      summary: Get file metadata
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: File metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileDto' }
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+    delete:
+      operationId: softDeleteFile
+      summary: Soft-delete a file (hard-deleted after 30 days)
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: File soft-deleted
+        '404':
+          description: File not found or already deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /files:
+    get:
+      operationId: listFiles
+      summary: List files for the authenticated tenant (paginated)
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Paginated file list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListFilesResponse' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /files/by-entity/{entityType}/{entityId}:
+    get:
+      operationId: listFilesByEntity
+      summary: List files associated with a specific business entity
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: entityType
+          required: true
+          schema: { type: string }
+          description: e.g. "site_report", "purchase_order"
+        - in: path
+          name: entityId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Files for the entity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/FileDto' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /files/admin/{fileId}/recover:
+    post:
+      operationId: recoverQuarantinedFile
+      summary: Release a quarantined file back to CLEAN (SYSTEM_ADMIN)
+      description: |
+        The manual override for a ClamAV quarantine. Moves the object out of the quarantine bucket
+        and flips `file_status` to `CLEAN`, so the file becomes downloadable again.
+
+        Cross-tenant by design — the lookup is `findFileByIdAdmin`, which does not scope by tenant,
+        because a platform operator clearing a false positive is acting outside any one tenant. That
+        is why the role gate is `SYSTEM_ADMIN` and not `TENANT_ADMIN`.
+
+        Documented 2026-09-03; the route had run since Phase 9 carried by no OpenAPI document.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: File released from quarantine
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file_id, file_status]
+                properties:
+                  file_id: { type: string, format: uuid }
+                  file_status: { type: string, enum: [CLEAN] }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: 'Forbidden — SYSTEM_ADMIN only (`COS-FILE-011`)'
+        '404':
+          description: 'File not found (`COS-FILE-005`)'
+        '422':
+          description: |
+            The file is not in `QUARANTINED` status (`COS-FILE-010`). Recovering a file that was
+            never quarantined would be a status change with no antivirus decision behind it.
+
+  /files/retention-policies:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+      operationId: listRetentionPolicies
+      summary: List per-category retention policies (TENANT_ADMIN)
+      tags: [Retention]
+      responses:
+        '200':
+          description: Retention policies for the tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RetentionPolicy' } }
+        '403': { description: Forbidden — TENANT_ADMIN only }
+    put:
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+      operationId: upsertRetentionPolicy
+      summary: Create or update a category retention policy (TENANT_ADMIN)
+      tags: [Retention]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, retention_days]
+              properties:
+                category:
+                  type: string
+                  enum: [image, document, cad, video, archive]
+                retention_days: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Persisted policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RetentionPolicy' }
+        '403': { description: Forbidden — TENANT_ADMIN only }
+        '422': { description: Invalid category or retention_days (COS-FILE-014) }
+
+  /files/{fileId}/legal-hold:
+    post:
+      operationId: placeLegalHold
+      summary: Place a legal hold on a file — blocks all deletion (WORM; TENANT_ADMIN)
+      tags: [Retention]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Hold placed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file_id: { type: string, format: uuid }
+                  legal_hold: { type: boolean }
+        '403': { description: Forbidden — TENANT_ADMIN only }
+        '404': { description: File not found }
+    delete:
+      operationId: releaseLegalHold
+      summary: Release a legal hold on a file (TENANT_ADMIN)
+      tags: [Retention]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XUserRole'
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Hold released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file_id: { type: string, format: uuid }
+                  legal_hold: { type: boolean }
+        '403': { description: Forbidden — TENANT_ADMIN only }
+        '404': { description: File not found }

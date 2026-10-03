@@ -1,0 +1,1631 @@
+openapi: 3.1.0
+info:
+  title: Construction OS — Procurement Service API
+  version: 1.0.0
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: 'Phase 5 Procurement Service. Covers vendor management, purchase requests,
+
+    RFQ lifecycle, quotation comparison, PO approval chain (Temporal-backed),
+
+    delivery recording, and invoice receipt.
+
+
+    Approval thresholds (spec §15.5):
+
+    - ≤ 50,000 THB: PROJECT_MANAGER alone
+
+    - 50,001–500,000 THB: PROJECT_MANAGER + FINANCE
+
+    - > 500,000 THB: PROJECT_MANAGER + FINANCE + EXECUTIVE
+
+    - 48h timeout per approver → escalates to TENANT_ADMIN
+
+    '
+servers:
+  - url: /api/v1
+    description: Current API version
+security:
+  - bearerAuth: []
+tags:
+  - name: Vendors
+    description: Vendor master data management
+  - name: Purchase Requests
+    description: Purchase request creation and tracking
+  - name: RFQs
+    description: Request-for-Quotation lifecycle (Temporal workflow)
+  - name: Quotations
+    description: Vendor quotation submission and comparison
+  - name: Purchase Orders
+    description: Purchase order lifecycle with multi-tier approval chain (Temporal workflow)
+  - name: Deliveries
+    description: Delivery recording against POs
+  - name: Invoices
+    description: Vendor invoice receipt and approval
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    VendorRow:
+      type: object
+      properties:
+        vendor_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        vendor_code:
+          type: string
+          maxLength: 50
+        vendor_name:
+          type: string
+          maxLength: 255
+        tax_id:
+          type: [string, 'null']
+        contact_email:
+          type: [string, 'null']
+          format: email
+        contact_phone:
+          type: [string, 'null']
+        address:
+          type: [string, 'null']
+        is_active:
+          type: boolean
+        category:
+          type: [string, 'null']
+          enum: [MATERIALS, LOGISTICS, SERVICES, EQUIPMENT]
+          description: >-
+            What the vendor supplies, for directory browsing. NULL = never categorised.
+            NOT a tax classification — withholding tax uses finance.wht_rules.service_type,
+            a separate vocabulary (spec §13.3).
+        verification_status:
+          type: [string, 'null']
+          enum: [PENDING, VERIFIED, REJECTED]
+          description: >-
+            Document-check state only. NULL = never submitted for review. NOT a performance
+            rating — that is the vendor score (GET /procurement/vendors/{vendorId}/score).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    VendorDirectoryRow:
+      allOf:
+        - $ref: '#/components/schemas/VendorRow'
+        - type: object
+          properties:
+            active_project_count:
+              type: integer
+              minimum: 0
+              description: >-
+                DISTINCT projects the vendor currently has a purchase order on whose status is not
+                DRAFT, PENDING_APPROVAL or PAID — the three states that are not live work (the
+                first two are not committed yet, PAID is closed out). DISPUTED counts: an
+                unresolved dispute is still an engagement. 0 for a vendor with no open orders.
+    CreateVendorDto:
+      type: object
+      required:
+        - vendor_code
+        - vendor_name
+      properties:
+        vendor_code:
+          type: string
+          maxLength: 50
+        vendor_name:
+          type: string
+          maxLength: 255
+        tax_id:
+          type: [string, 'null']
+          maxLength: 100
+        contact_email:
+          type: string
+          format: email
+        contact_phone:
+          type: string
+          maxLength: 50
+        address:
+          type: string
+    PurchaseRequestRow:
+      type: object
+      properties:
+        pr_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        pr_number:
+          type: string
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - SUBMITTED
+            - APPROVED
+            - REJECTED
+            - PO_CREATED
+        requested_by:
+          type: string
+          format: uuid
+        required_date:
+          type: [string, 'null']
+          format: date
+        created_at:
+          type: string
+          format: date-time
+    CreatePurchaseRequestDto:
+      type: object
+      required:
+        - project_id
+        - pr_number
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        pr_number:
+          type: string
+          maxLength: 50
+        required_date:
+          type: string
+          format: date
+    RfqRow:
+      type: object
+      properties:
+        rfq_id:
+          type: string
+          format: uuid
+        pr_id:
+          type: [string, 'null']
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        rfq_number:
+          type: string
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - PUBLISHED
+            - CLOSED
+            - EVALUATED
+            - AWARDED
+            - CANCELLED
+        deadline:
+          type: string
+          format: date-time
+        temporal_workflow_id:
+          type: [string, 'null']
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    CreateRfqDto:
+      type: object
+      required:
+        - project_id
+        - rfq_number
+        - deadline
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        pr_id:
+          type: string
+          format: uuid
+        rfq_number:
+          type: string
+          maxLength: 50
+        deadline:
+          type: string
+          format: date-time
+    QuotationRow:
+      type: object
+      properties:
+        quotation_id:
+          type: string
+          format: uuid
+        rfq_id:
+          type: string
+          format: uuid
+        vendor_id:
+          type: string
+          format: uuid
+        total_amount:
+          type: string
+          description: DECIMAL(19,4) as string
+        currency_code:
+          type: string
+          maxLength: 3
+        validity_days:
+          type: integer
+        submitted_at:
+          type: string
+          format: date-time
+        is_selected:
+          type: boolean
+    SubmitQuotationDto:
+      type: object
+      required:
+        - vendor_id
+        - total_amount
+        - currency_code
+        - validity_days
+        - submitted_at
+      properties:
+        vendor_id:
+          type: string
+          format: uuid
+        total_amount:
+          type: string
+          description: DECIMAL(19,4) as string — never float
+        currency_code:
+          type: string
+          maxLength: 3
+        validity_days:
+          type: integer
+          minimum: 1
+        submitted_at:
+          type: string
+          format: date-time
+    PoLineItemDto:
+      type: object
+      required:
+        - description
+        - quantity
+        - unit
+        - unit_price
+      properties:
+        boq_item_id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        quantity:
+          type: string
+          description: DECIMAL(10,4) as string
+        unit:
+          type: string
+          maxLength: 50
+        unit_price:
+          type: string
+          description: DECIMAL(19,4) as string
+    PoLineItemRow:
+      type: object
+      properties:
+        line_id:
+          type: string
+          format: uuid
+        po_id:
+          type: string
+          format: uuid
+        boq_item_id:
+          type: [string, 'null']
+          format: uuid
+        description:
+          type: string
+        quantity:
+          type: string
+        unit:
+          type: string
+        unit_price:
+          type: string
+        line_total:
+          type: string
+    CreatePurchaseOrderDto:
+      type: object
+      required:
+        - vendor_id
+        - project_id
+        - po_number
+        - total_amount
+        - currency_code
+        - delivery_date
+        - line_items
+      properties:
+        rfq_id:
+          type: string
+          format: uuid
+        vendor_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        po_number:
+          type: string
+          maxLength: 50
+        total_amount:
+          type: string
+          description: DECIMAL(19,4) as string — must equal sum of line_items
+        currency_code:
+          type: string
+          maxLength: 3
+        delivery_date:
+          type: string
+          format: date
+        line_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PoLineItemDto'
+    PurchaseOrderRow:
+      type: object
+      properties:
+        po_id:
+          type: string
+          format: uuid
+        rfq_id:
+          type: [string, 'null']
+          format: uuid
+        vendor_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        po_number:
+          type: string
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - PENDING_APPROVAL
+            - APPROVED
+            - SENT
+            - ACKNOWLEDGED
+            - PARTIALLY_DELIVERED
+            - FULLY_DELIVERED
+            - INVOICED
+            - PAID
+            - DISPUTED
+        total_amount:
+          type: string
+        currency_code:
+          type: string
+        delivery_date:
+          type: string
+          format: date
+        temporal_workflow_id:
+          type: [string, 'null']
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    DeliveryItemDto:
+      type: object
+      required:
+        - line_id
+        - quantity_received
+      properties:
+        line_id:
+          type: string
+          format: uuid
+        quantity_received:
+          type: string
+          description: DECIMAL(10,4) as string
+    RecordDeliveryDto:
+      type: object
+      required:
+        - po_id
+        - delivered_at
+        - items
+      properties:
+        po_id:
+          type: string
+          format: uuid
+          description: Purchase order this is recorded against
+        delivery_note:
+          type: string
+          maxLength: 100
+        delivered_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/DeliveryItemDto'
+    DeliveryRow:
+      type: object
+      properties:
+        delivery_id:
+          type: string
+          format: uuid
+        po_id:
+          type: string
+          format: uuid
+        delivery_note:
+          type: [string, 'null']
+        delivered_at:
+          type: string
+          format: date-time
+        received_by:
+          type: string
+          format: uuid
+        notes:
+          type: [string, 'null']
+    ReceiveInvoiceDto:
+      type: object
+      required:
+        - po_id
+        - invoice_number
+        - amount
+        - currency_code
+        - invoice_date
+        - due_date
+      properties:
+        po_id:
+          type: string
+          format: uuid
+          description: Purchase order this is recorded against
+        invoice_number:
+          type: string
+          maxLength: 100
+        amount:
+          type: string
+          description: DECIMAL(19,4) as string
+        currency_code:
+          type: string
+          maxLength: 3
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        file_id:
+          type: string
+          format: uuid
+    InvoiceRow:
+      type: object
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        po_id:
+          type: string
+          format: uuid
+        vendor_id:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+        amount:
+          type: string
+        currency_code:
+          type: string
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum:
+            - RECEIVED
+            - VERIFIED
+            - APPROVED
+            - PAID
+            - DISPUTED
+        file_id:
+          type: [string, 'null']
+          format: uuid
+        vendor_name:
+          type: [string, 'null']
+          description: >-
+            The vendor's name, LEFT-joined from `procurement.vendors` on the read paths (added
+            2026-09-08 — additive, so no version bump per QM-2). Present on GET responses and
+            absent from the rows a write returns. The join lives here, in the service that owns
+            both tables: finance may not query `procurement.*` (master PHASE 7 line 3216), so the
+            mobile AP queue resolves a payment's vendor through this endpoint by `invoice_id`.
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: COS-PROC-001
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+paths:
+  # ── Vendor invoices and the vendor scorecard (written 2026-08-24) ─────────
+  /procurement/vendor-invoices/{invoiceId}:
+    get:
+      summary: Get a vendor invoice by id
+      operationId: getVendorInvoice
+      tags: [vendor-invoices]
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The invoice
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such invoice in this tenant
+
+  /procurement/vendor-invoices/{invoiceId}/dispute:
+    post:
+      summary: Dispute a vendor invoice
+      description: |
+        FINANCE or TENANT_ADMIN. Moves the invoice to DISPUTED, which stops it being paid while the
+        disagreement is open — a dispute is a hold, not a rejection, and the invoice stays on the
+        ledger.
+
+        **The server currently ignores the request body.** `disputeVendorInvoice` takes the invoice
+        id and nothing else, so a `reason` sent here is accepted and discarded — no error, no
+        record. The sibling `POST /procurement/purchase-orders/{poId}/dispute` does take one
+        (`DisputeInvoiceDto`, max 2000 characters). Whether this endpoint should record a reason
+        too, or the body should be dropped from this contract, is a product-owner decision;
+        documented here rather than silently resolved in either direction. Noted 2026-08-31.
+      operationId: disputeVendorInvoice
+      tags: [vendor-invoices]
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '201':
+          description: Invoice disputed
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — FINANCE or TENANT_ADMIN
+        '404':
+          description: No such invoice in this tenant
+        '422':
+          description: Not in a disputable state
+
+  /procurement/vendor-invoices/{invoiceId}/note:
+    post:
+      summary: Set the free-text note on a vendor invoice
+      description: FINANCE or TENANT_ADMIN. Replaces the note; it is a field, not an append log.
+      operationId: setVendorInvoiceNote
+      tags: [vendor-invoices]
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '201':
+          description: Note set
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such invoice in this tenant
+
+  /procurement/vendors/{vendorId}/score:
+    get:
+      summary: Vendor scorecard
+      description: |
+        On-time delivery, quality and price, reduced to a grade. Derived from the vendor's own
+        delivery and quotation history — there is no manually entered rating to disagree with it.
+      operationId: getVendorScore
+      tags: [vendors]
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The scorecard
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such vendor in this tenant
+  /procurement/vendors:
+    post:
+      tags:
+        - Vendors
+      summary: Create a new vendor
+      operationId: createVendor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVendorDto'
+      responses:
+        '201':
+          description: Vendor created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VendorRow'
+        '422':
+          description: Business rule violation
+    get:
+      tags:
+        - Vendors
+      summary: List vendors
+      operationId: listVendors
+      parameters:
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Vendor list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VendorRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/vendors/directory:
+    get:
+      tags:
+        - Vendors
+      summary: Vendor directory — active vendors with their open-project count
+      description: >-
+        Serves the mobile vendor directory
+        (drawn in the `mockup/mobile/06_project_manager` set withdrawn on 2026-08-10, and today in
+        `mockup/mobile/11_proc_manager/03_orders/01_pom_order`, titled "Vendor Directory"; the vendor
+        directory now hangs off the More menu). Each row is the vendor
+        plus `active_project_count`. Separate from GET /procurement/vendors, which is the plain
+        vendor master read and does not pay for the per-row aggregate. The trust score is NOT
+        included: it is a per-vendor computation, GET /procurement/vendors/{vendorId}/score.
+      operationId: listVendorDirectory
+      parameters:
+        - name: category
+          in: query
+          required: false
+          description: >-
+            Narrow to one category. An unknown value returns 400 — a filter that silently ignores
+            its own argument would return a full list the caller believes is filtered.
+          schema:
+            type: string
+            enum: [MATERIALS, LOGISTICS, SERVICES, EQUIPMENT]
+      responses:
+        '200':
+          description: Active vendors, alphabetical by name
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VendorDirectoryRow'
+        '400':
+          description: Unknown category
+  /procurement/vendors/{vendorId}:
+    get:
+      tags:
+        - Vendors
+      summary: Get vendor by ID
+      operationId: getVendor
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The vendor, with its rating
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VendorRow'
+        '404':
+          description: Not found
+    delete:
+      tags:
+        - Vendors
+      summary: Deactivate vendor (soft delete)
+      operationId: deactivateVendor
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Deactivated
+        '404':
+          description: Not found
+  /procurement/vendors/{vendorId}/quotations:
+    get:
+      tags:
+        - Vendors
+      summary: List a vendor's quotation history (all RFQs, newest first)
+      operationId: getVendorQuotations
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The vendor's quotations across all RFQs, ordered by submitted_at DESC
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QuotationRow'
+        '404':
+          description: Vendor not found
+  /procurement/rfqs:
+    get:
+      tags:
+        - RFQs
+      summary: List RFQs across the tenant (filterable) — AIP-132
+      operationId: listAllRfqs
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: RFQs for the tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RfqRow'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - RFQs
+      summary: Create RFQ and start Temporal workflow
+      operationId: createRfq
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRfqDto'
+      responses:
+        '201':
+          description: RFQ created (DRAFT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RfqRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/rfqs/{rfqId}/publish:
+    post:
+      tags:
+        - RFQs
+      summary: Publish RFQ (DRAFT → PUBLISHED)
+      operationId: publishRfq
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '422':
+          description: Not in DRAFT state
+  /procurement/rfqs/{rfqId}/close:
+    post:
+      tags:
+        - RFQs
+      summary: Manually close RFQ before deadline (PUBLISHED → CLOSED)
+      operationId: closeRfq
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/rfqs/{rfqId}/cancel:
+    post:
+      tags:
+        - RFQs
+      summary: Cancel RFQ
+      operationId: cancelRfq
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/rfqs/{rfqId}/award:
+    post:
+      tags:
+        - RFQs
+      summary: Award RFQ to selected quotation (EVALUATED → AWARDED)
+      operationId: awardRfq
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - quotation_id
+              properties:
+                quotation_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: RFQ awarded
+        '400':
+          description: Body failed validation — ValidationPipe rejects it before the handler runs
+        '404':
+          description: Quotation not found in RFQ
+  /procurement/rfqs/{rfqId}/quotations:
+    post:
+      tags:
+        - Quotations
+      summary: Submit a vendor quotation for an RFQ
+      operationId: submitQuotation
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitQuotationDto'
+      responses:
+        '201':
+          description: Quotation submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotationRow'
+        '422':
+          description: RFQ not PUBLISHED
+    get:
+      tags:
+        - Quotations
+      summary: Compare quotations (sorted by price ASC, lowest auto-selected)
+      operationId: compareQuotations
+      parameters:
+        - name: rfqId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Quotations submitted against this RFQ
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QuotationRow'
+        '422':
+          description: RFQ not CLOSED or no quotations
+  /procurement/purchase-orders:
+    get:
+      description: |
+        VIEWER may call this since 2026-09-11 (ADR-103). The role has read on this module in §6.8 and every GET here answered 403 for it until then; the six routes its own screens read were opened per-route rather than by widening the shared READ_ROLES constant, which 24 other handlers use.
+      tags:
+        - Purchase Orders
+      summary: List purchase orders across the tenant (filterable) — AIP-132
+      operationId: listAllPurchaseOrders
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Purchase orders for the tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PurchaseOrderRow'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Purchase Orders
+      summary: Create PO and start Temporal workflow
+      operationId: createPurchaseOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseOrderDto'
+      responses:
+        '201':
+          description: Purchase order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  po:
+                    $ref: '#/components/schemas/PurchaseOrderRow'
+                  line_items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PoLineItemRow'
+        '422':
+          description: Total mismatch or validation error
+  /procurement/purchase-orders/{poId}:
+    get:
+      tags:
+        - Purchase Orders
+      summary: Get PO detail with line items
+      operationId: getPurchaseOrder
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The purchase order, with its line items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  po:
+                    $ref: '#/components/schemas/PurchaseOrderRow'
+                  line_items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PoLineItemRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/submit:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Submit PO for approval (DRAFT → PENDING_APPROVAL)
+      operationId: submitPoForApproval
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/approve:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Approve PO for a tier (PM / FINANCE / EXECUTIVE / TENANT_ADMIN)
+      operationId: approvePo
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tier
+              properties:
+                tier:
+                  type: string
+                  enum:
+                    - PM
+                    - FINANCE
+                    - EXECUTIVE
+                    - TENANT_ADMIN
+      responses:
+        '200':
+          description: Approval signal sent
+        '400':
+          description: Body failed validation — ValidationPipe rejects it before the handler runs
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/reject:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Reject PO — returns to DRAFT
+      operationId: rejectPo
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  maxLength: 2000
+      responses:
+        '200':
+          description: Rejection signal sent
+        '400':
+          description: Body failed validation — ValidationPipe rejects it before the handler runs
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/acknowledge:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Record vendor acknowledgement (SENT → ACKNOWLEDGED)
+      operationId: acknowledgePo
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/mark-paid:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Mark PO invoice as paid (INVOICED → PAID)
+      operationId: markInvoicePaid
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Signal sent
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/dispute:
+    post:
+      tags:
+        - Purchase Orders
+      summary: Dispute invoice (INVOICED → DISPUTED)
+      operationId: disputeInvoice
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  maxLength: 2000
+      responses:
+        '200':
+          description: Signal sent
+        '400':
+          description: Body failed validation — ValidationPipe rejects it before the handler runs
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-requests:
+    get:
+      tags:
+        - Purchase Requests
+      summary: List purchase requests across the tenant (filterable) — AIP-132
+      operationId: listAllPurchaseRequests
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Purchase requests for the tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PurchaseRequestRow'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Purchase Requests
+      summary: Create a purchase request
+      operationId: createPurchaseRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseRequestDto'
+      responses:
+        '201':
+          description: Purchase request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/deliveries:
+    get:
+      description: |
+        VIEWER may call this since 2026-09-11 (ADR-103). The role has read on this module in §6.8 and every GET here answered 403 for it until then; the six routes its own screens read were opened per-route rather than by widening the shared READ_ROLES constant, which 24 other handlers use.
+      tags:
+        - Deliveries
+      summary: List deliveries across the tenant (filterable by PO) — AIP-132
+      operationId: listAllDeliveries
+      parameters:
+        - name: po_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Recorded deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeliveryRow'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Deliveries
+      summary: Record a delivery against a PO
+      operationId: recordDelivery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordDeliveryDto'
+      responses:
+        '201':
+          description: Delivery recorded against a purchase order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivery:
+                    $ref: '#/components/schemas/DeliveryRow'
+                  is_partial:
+                    type: boolean
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/purchase-orders/{poId}/deliveries:
+    get:
+      tags:
+        - Deliveries
+      summary: List deliveries recorded against a purchase order
+      operationId: listDeliveriesByPo
+      parameters:
+        - name: poId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deliveries recorded against this purchase order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeliveryRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/vendor-invoices:
+    post:
+      tags:
+        - Invoices
+      summary: Receive a vendor invoice (PO must be FULLY_DELIVERED)
+      operationId: receiveInvoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceiveInvoiceDto'
+      responses:
+        '201':
+          description: Vendor invoice created against a purchase order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags:
+        - Invoices
+      summary: List vendor invoices across the tenant (AP queue; filterable by PO/status)
+      operationId: listInvoices
+      parameters:
+        - name: po_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [RECEIVED, VERIFIED, APPROVED, PAID, DISPUTED]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Clamped to 1..100 by `parseLimit` in procurement.controller.ts; a larger value is
+            silently reduced to 100 rather than rejected.
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: >-
+            One page of vendor invoices. `total` is the server's own COUNT(*) over the FILTER, not
+            over the page, so a caller wanting "how many are disputed" asks with
+            `status=DISPUTED&limit=1` and reads it rather than counting rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InvoiceRow'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /procurement/vendor-invoices/{invoiceId}/approve:
+    post:
+      tags:
+        - Invoices
+      summary: Approve vendor invoice (RECEIVED/VERIFIED → APPROVED)
+      operationId: approveInvoice
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The invoice after approval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceRow'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

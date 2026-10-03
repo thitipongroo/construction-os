@@ -1,0 +1,284 @@
+openapi: 3.1.0
+info:
+  title: Construction OS — Equipment API
+  version: v1
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Equipment Service — Phase 21.
+    Manages equipment registry, assignments, maintenance schedules, and IoT telemetry.
+    All endpoints require Bearer JWT (Keycloak RS256). RBAC enforced per role.
+servers:
+  - url: /api/v1
+    description: Current version
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Equipment:
+      type: object
+      properties:
+        equipment_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        equipment_code: { type: string }
+        equipment_name: { type: string }
+        equipment_type:
+          {
+            type: string,
+            enum: [CRANE, EXCAVATOR, CONCRETE_MIXER, GENERATOR, SCAFFOLD, VEHICLE, OTHER],
+          }
+        status: { type: string, enum: [AVAILABLE, IN_USE, MAINTENANCE, RETIRED] }
+        purchase_date: { type: [string, 'null'], format: date }
+        purchase_cost: { type: [string, 'null'] }
+        currency_code: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    CreateEquipmentRequest:
+      type: object
+      required: [equipment_code, equipment_name, equipment_type]
+      properties:
+        equipment_code: { type: string }
+        equipment_name: { type: string }
+        equipment_type:
+          {
+            type: string,
+            enum: [CRANE, EXCAVATOR, CONCRETE_MIXER, GENERATOR, SCAFFOLD, VEHICLE, OTHER],
+          }
+        purchase_date: { type: string, format: date }
+        # DECIMAL(19,4) as a string — never a JS number (master:990). The response schema above
+        # has always said so; the request schema is what disagreed.
+        purchase_cost: { type: string }
+        currency_code: { type: string }
+
+    AssignEquipmentRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id: { type: string, format: uuid }
+        notes: { type: string }
+
+    LogMaintenanceRequest:
+      type: object
+      required: [maintenance_type, scheduled_at]
+      properties:
+        maintenance_type: { type: string, enum: [SCHEDULED, UNSCHEDULED, REPAIR] }
+        scheduled_at: { type: string, format: date-time }
+        # DECIMAL string, as purchase_cost above.
+        cost: { type: string }
+        currency_code: { type: string }
+        performed_by: { type: string }
+        notes: { type: string }
+
+    RecordUtilizationRequest:
+      type: object
+      required: [recorded_at]
+      properties:
+        recorded_at: { type: string, format: date-time }
+        project_id: { type: string, format: uuid }
+        hours_operated: { type: number }
+        fuel_consumed: { type: number }
+        operator_id: { type: string, format: uuid }
+
+paths:
+  /equipment:
+    post:
+      operationId: createEquipment
+      summary: Create equipment
+      tags: [Equipment]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateEquipmentRequest' }
+      responses:
+        '201':
+          description: Equipment created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Equipment' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+    get:
+      operationId: listEquipment
+      summary: List equipment
+      tags: [Equipment]
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Equipment list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Equipment' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}:
+    get:
+      operationId: getEquipment
+      summary: Get equipment detail
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Equipment detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Equipment' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}/status:
+    patch:
+      operationId: updateEquipmentStatus
+      summary: Update equipment status
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [AVAILABLE, IN_USE, MAINTENANCE, RETIRED] }
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Equipment' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}/assignments:
+    post:
+      operationId: assignEquipment
+      summary: Assign equipment to project
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignEquipmentRequest' }
+      responses:
+        '201':
+          description: Assignment created
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}/assignments/{aid}/return:
+    patch:
+      operationId: returnEquipment
+      summary: Return equipment from project
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: aid, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  description: |
+                    Condition on return — damage, fuel level, anything the next site should know.
+                    Optional, and the only field: what is being returned and by whom is already
+                    known from the assignment.
+      responses:
+        '200':
+          description: Equipment returned
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}/maintenance:
+    post:
+      operationId: logMaintenance
+      summary: Log maintenance record
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LogMaintenanceRequest' }
+      responses:
+        '201':
+          description: Maintenance logged
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /equipment/{id}/utilization:
+    post:
+      operationId: recordUtilization
+      summary: Record daily utilization
+      tags: [Equipment]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordUtilizationRequest' }
+      responses:
+        '201':
+          description: Utilization recorded
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row
+
+  /projects/{projectId}/equipment:
+    get:
+      operationId: getProjectEquipment
+      summary: Get equipment assigned to a project
+      tags: [Equipment]
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Equipment list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Equipment' }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+        '403':
+          description: Insufficient role — see 06-rbac-permission-matrix, Equipment row

@@ -1,0 +1,270 @@
+openapi: '3.1.0'
+info:
+  title: Construction OS — Graph API
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Knowledge Graph query endpoints for Construction OS (Phase 13).
+
+    All endpoints read from Neo4j via the Graph Query Service (NestJS).
+    Tenant isolation is enforced server-side: the `tenant_id` is taken from the
+    authenticated JWT (never from a client-supplied parameter) and every Cypher
+    query filters by it.
+
+    **Reviewed 2026-09-03** against `backend/src/modules/graph/` at 7291fc97. The only change to the
+    controller or its DTOs since this document was last written is `JwtAuthGuard` moving from
+    `../identity/guards/` to `../../shared/guards/` — an import path, not a route, a payload or a
+    status code. `maintenance/contract-reconcile.ts` also changed; it is a maintenance script with no
+    route. This line records the comparison the freshness gate asks for, which compares commit
+    timestamps and so counted the refactor as a source change.
+
+servers:
+  - url: /api/v1
+    description: Current version — relative, so the document works behind whatever host serves it
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    VendorItem:
+      type: object
+      properties:
+        vendorId:
+          type: string
+          format: uuid
+        vendorName:
+          type: string
+
+    SupplyChainItem:
+      type: object
+      properties:
+        materialId:
+          type: string
+          format: uuid
+        description:
+          type: string
+        vendorId:
+          type: string
+          format: uuid
+        vendorName:
+          type: string
+
+    InspectionItem:
+      type: object
+      properties:
+        inspectionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: PASS
+        inspectedAt:
+          type: string
+          example: '2026-06-01T08:00:00Z'
+
+    VendorProjectItem:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+
+    InvoiceItem:
+      type: object
+      properties:
+        invoiceId:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          description: Decimal string (ClickHouse Decimal64 serialised as string)
+          example: '150000.00'
+        currency:
+          type: string
+          example: THB
+        status:
+          type: string
+          example: APPROVED
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: COS-GRAPH-001
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+security:
+  - bearerAuth: []
+
+paths:
+  /graph/projects/{projectId}/vendors:
+    get:
+      tags: [graph]
+      summary: All vendors supplying to a project
+      operationId: getVendorsForProject
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of vendors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VendorItem'
+        '503':
+          description: Neo4j unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /graph/projects/{projectId}/supply-chain:
+    get:
+      tags: [graph]
+      summary: Material supply chain for a project
+      operationId: getSupplyChain
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Supply chain items (material → vendor)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SupplyChainItem'
+        '503':
+          description: Neo4j unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /graph/projects/{projectId}/inspections:
+    get:
+      tags: [graph]
+      summary: All inspections for a project (pass/fail summary)
+      operationId: getInspectionsForProject
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Inspection list with status
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InspectionItem'
+        '503':
+          description: Neo4j unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /graph/vendors/{vendorId}/projects:
+    get:
+      tags: [graph]
+      summary: Vendor relationship map — projects sharing this vendor
+      operationId: getProjectsForVendor
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Projects that share this vendor
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VendorProjectItem'
+        '503':
+          description: Neo4j unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+
+  /graph/vendors/{vendorId}/invoices:
+    get:
+      tags: [graph]
+      summary: All invoices submitted by a vendor
+      operationId: getInvoicesForVendor
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Invoice list for this vendor
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InvoiceItem'
+        '503':
+          description: Neo4j unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated — missing or invalid bearer token

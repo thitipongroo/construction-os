@@ -1,0 +1,182 @@
+# Construction OS — API Error Code Registry (QM-10)
+
+Format: `COS-{DOMAIN}-{NNN}`
+
+All API error responses follow the structure:
+
+```json
+{
+  "error": {
+    "code": "COS-FILE-001",
+    "message": "Human-readable message",
+    "traceId": "opentelemetry-trace-id",
+    "timestamp": "ISO8601"
+  }
+}
+```
+
+---
+
+## COS-AUTH — Authentication & Authorization (Phase 2)
+
+| Code         | HTTP | messageKey                         | Message                                                                  | Trigger                                                                                                      |
+| ------------ | ---- | ---------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| COS-AUTH-001 | 403  | `auth.mfa.required`                | Multi-factor authentication is required for this role                    | TENANT_ADMIN/FINANCE token lacks proof of OTP (`acr`) and `MFA_ENFORCE=true` (§5.4.1) — `mfa-enforcement.ts` |
+| COS-AUTH-001 | 401  | `auth.otp.pathNotAvailable`        | This account cannot sign in with an OTP — use email sign-in              | Keycloak answered `invalid_grant` on Direct Grant — `keycloak-admin.service.ts`                              |
+| COS-AUTH-002 | 503  | `auth.sms.providerUnavailable`     | SMS delivery is not configured for this deployment                       | `SMS_PROVIDER=onprem` with no concrete gateway wired (ADR-040) — `onprem-sms.adapter.ts`                     |
+| COS-AUTH-002 | 400  | `user.role.pathBRequiresEmail`     | {role} sign in by email and password only, and this account has no email | Promoting a phone-only (Path A) account to TENANT_ADMIN/FINANCE — `user.service.ts` `changeRole`             |
+| COS-AUTH-003 | 400  | `user.password.pathAHasNoPassword` | This account signs in with a phone number and a one-time code            | Self-service reset email requested on a Path A account — `POST /users/me/password-reset-email`               |
+| COS-AUTH-004 | 503  | `auth.identity.unavailable`        | Identity could not be verified right now — try again                     | `GET /auth/identity` (internal listener): JWKS/database failure, or an identity kill switch OFF (ADR-107)    |
+| COS-AUTH-101 | 401  | `auth.phone.ambiguous`             | This phone number is registered to more than one account                 | One phone number resolves to several active accounts — `identity.service.ts`                                 |
+| COS-AUTH-503 | 503  | —                                  | Identity provider unavailable                                            | Keycloak unreachable or misconfigured during Direct Grant — `keycloak-admin.service.ts`                      |
+
+> **`COS-AUTH-001` and `COS-AUTH-002` each carry two unrelated meanings**, and have done since
+> before this registry listed any of them; the rows above are what the code actually throws, read
+> from it rather than recalled. A client cannot tell the two senses apart by code alone — it must
+> read the HTTP status or the `messageKey`, which is why that column now exists. Renumbering either
+> is a breaking change to an error contract and is not made here. `COS-AUTH-003` was assigned fresh
+> so the self-service reset would not add a third meaning to an existing number.
+
+---
+
+## COS-FILE — File Service (Phase 9)
+
+| Code         | HTTP | Message                                   | Trigger                                                                             |
+| ------------ | ---- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| COS-FILE-001 | 401  | Missing X-Tenant-ID or X-User-ID header   | Kong headers absent (unauthenticated)                                               |
+| COS-FILE-002 | 422  | MIME type not allowed                     | Uploaded MIME not in allowed list                                                   |
+| COS-FILE-003 | 422  | File exceeds maximum allowed size         | File size > per-MIME limit                                                          |
+| COS-FILE-004 | 422  | File extension is not permitted           | .exe, .sh, .bat, .js uploaded                                                       |
+| COS-FILE-005 | 404  | File not found                            | fileId not found for tenant                                                         |
+| COS-FILE-006 | 404  | File has been deleted                     | File exists but deleted_at is set                                                   |
+| COS-FILE-007 | 500  | File upload failed                        | MinIO write error                                                                   |
+| COS-FILE-008 | 500  | Failed to generate signed URL             | MinIO presign error                                                                 |
+| COS-FILE-009 | 500  | Antivirus scan failed                     | ClamAV unreachable or scan error                                                    |
+| COS-FILE-010 | 422  | File is not in quarantine status          | Recover on non-quarantined file                                                     |
+| COS-FILE-011 | 403  | Insufficient permissions                  | Caller lacks the required role                                                      |
+| COS-FILE-012 | 422  | Archive exceeds max entry count           | ZIP bulk upload — too many entries                                                  |
+| COS-FILE-013 | 422  | Archive rejected (zip-bomb guard)         | Ratio/total-size limit exceeded                                                     |
+| COS-FILE-014 | 422  | Invalid retention policy                  | Bad category or retention_days                                                      |
+| COS-FILE-015 | 404  | No annotation for this file               | GET annotation on a photo with none (ADR-056)                                       |
+| COS-FILE-016 | 409  | File not available (scan pending/failed)  | Signed-URL requested before ClamAV cleared the file (not CLEAN)                     |
+| COS-FILE-017 | 422  | File content does not match declared type | Magic-byte sniff contradicts the declared MIME (M7)                                 |
+| COS-FILE-018 | 401  | Invalid or expired authentication token   | In-service JWT verify failed, or token/Kong-header tenant mismatch (M1)             |
+| COS-FILE-019 | 404  | File not found                            | Annotation push for a file_id not visible in the caller's tenant                    |
+| COS-FILE-020 | 422  | This endpoint serves images only          | `GET /files/:id/image` on a non-image (ADR-105)                                     |
+| COS-FILE-021 | 500  | Failed to read the stored file            | MinIO read error while streaming `GET /files/:id/image`                             |
+| COS-FILE-022 | 503  | Identity could not be verified right now  | Backend `/auth/identity` unreachable, 5xx or unset URL — never the claims (ADR-107) |
+
+---
+
+## COS-FLAG — Feature Flags (QM-15; ADR-049)
+
+| Code         | HTTP | Message                                  | Trigger                                                             |
+| ------------ | ---- | ---------------------------------------- | ------------------------------------------------------------------- |
+| COS-FLAG-001 | 503  | Feature '{flag}' is temporarily disabled | @FeatureFlag-gated endpoint hit while the flag is OFF (kill switch) |
+
+---
+
+## COS-PDPA — Consent & data-subject rights (ADR-079; PDPA-20/21/22)
+
+`422`, not `403`: the request is well-formed and the caller is authorised — what fails is a business
+rule, namely that the lawful basis for that processing purpose is not in place (QM-10).
+
+The gate throws rather than silently dropping the field. A coordinate quietly discarded on a write
+that reports success is indistinguishable from a sync bug out on site, and the data is gone by the
+time anyone notices.
+
+| Code         | HTTP | Message                                             | Trigger                                                                                                 |
+| ------------ | ---- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| COS-PDPA-001 | 422  | Processing for purpose '{purpose}' requires consent | `ConsentService.requireConsent()` on a consent-basis purpose with no decision recorded, or a withdrawal |
+
+### Data export (ADR-078; PDPA-10/11)
+
+Each failure is separately identified on purpose. "Download failed" tells a person nothing about
+whether to wait, re-request, or complain — and this is the artefact answering their §30 request, so
+the difference between "still running", "it broke", and "the window closed" is the whole answer.
+
+| Code         | HTTP | Message                                     | Trigger                                                                                                                                                     |
+| ------------ | ---- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| COS-PDPA-002 | 403  | Step-up verification required               | `POST /users/me/data-export` with an action token that is absent, expired, already spent, or bound to another user/action                                   |
+| COS-PDPA-003 | 422  | The reporting window ends before it begins  | `from_date > to_date`. Rejected rather than run — an inverted window returns an EMPTY export, which reads as "you hold nothing about me"                    |
+| COS-PDPA-004 | 404  | Export request not found                    | No `export_id` for the calling user (RLS confines the tenant; `user_id` confines it within the tenant)                                                      |
+| COS-PDPA-005 | 422  | Still being prepared, or the failure reason | Status is PENDING/PROCESSING (wait) or FAILED (`failure_reason`, never a stack trace)                                                                       |
+| COS-PDPA-006 | 404  | Archive not currently retrievable           | File Service returned 404, or 409 `FILE_NOT_CLEAN` — a just-finished archive is briefly PENDING_SCAN while ClamAV runs                                      |
+| COS-PDPA-007 | 410  | This export has expired                     | Past `expires_at` (7 days), or status EXPIRED. The archive is gone; a new request is the way back                                                           |
+| COS-PDPA-008 | 404  | No inquiry with that reference              | `GET /privacy/inquiries/:reference` (SYSTEM_ADMIN) for a reference that does not exist. The public POST never returns this — it is the read side of ADR-091 |
+
+---
+
+## COS-TASK — Tasks, completion gates and the schedule network (Phase 6; ADR-026, ADR-097)
+
+`-001` and `-002` have been thrown since Phase 6 and were never registered here — added 2026-09-05
+alongside the three new codes, because a registry that omits the codes a service already returns is
+worse than no registry: a caller who looks one up and finds nothing concludes the code is not ours.
+
+`-003` and `-004` are `422`, not `400`: the request is well-formed and the caller is authorised, and
+what fails is a rule about the rest of the graph (QM-10). Neither can be expressed as a database
+constraint — a CHECK cannot see a graph — so both are enforced in `TasksService.addDependency`.
+
+| Code         | HTTP | Message                                                    | Trigger                                                                                                                                                                 |
+| ------------ | ---- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| COS-TASK-001 | 422  | Task completion blocked by hard-block gates                | `PATCH /tasks/{taskId}` to `COMPLETED` while any master Phase 6 gate fails. The response carries `blocking_gates` — the gate NAMES, so the caller learns which to clear |
+| COS-TASK-002 | 404  | Task not found                                             | No task with that id in the calling tenant. RLS makes "another tenant's task" indistinguishable from "no such task", which is intended                                  |
+| COS-TASK-003 | 422  | Dependency rejected: it would create a cycle               | `POST /projects/{projectId}/task-dependencies` where the predecessor is already reachable from the successor. A cyclic network has no critical path at all (ADR-097)    |
+| COS-TASK-004 | 422  | Both tasks of a dependency must belong to the same project | Either end of the edge sits in a different project. A per-project critical path cannot see across that boundary, so the edge is refused rather than half-honoured       |
+| COS-TASK-005 | 404  | Dependency not found                                       | `DELETE /task-dependencies/{dependencyId}` for an id that matches no row in the calling tenant                                                                          |
+
+---
+
+## COS-PSET — Platform settings (§6.7; ADR-108)
+
+The settings are one versioned document. A save names the version it read. Validation failures stay on
+`COS-GENERAL-400`, as every class-validator refusal in this API does.
+
+| Code         | HTTP | Message                                                                             | Trigger                                                                                                                                                                                                 |
+| ------------ | ---- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| COS-PSET-001 | 409  | Platform settings were changed by someone else. Reload and apply your change again. | `PUT /admin/settings` whose `version` is not the stored version. `details`: `expected_version`, `stored_version` (`null` when two first saves raced). messageKey `admin.settings.error.versionConflict` |
+
+---
+
+## COS-CPRICE — ราคากลาง central prices and the BOQ feed (ADR-061)
+
+Thrown by `backend/src/modules/central-prices` (`central-price-errors.ts`) and by `BoqService` for the
+ADR-061 BOQ feed. Field validation of a JSON body or of the import form's text fields stays on
+`COS-GENERAL-400`, as every class-validator refusal in this API does.
+
+`-004` is `422`, not `400`: the upload was well-formed and the caller authorised; what fails is the file's
+content as a whole. A FAILED run is recorded before it is returned, so `details.run_id` names a row the
+register's Failed-Sync panel shows. A file where only SOME rows fail is not an error — it is a `200`
+listing each rejected row.
+
+| Code           | HTTP | Message                                                    | Trigger                                                                                                                                                                                                                                                                                                 |
+| -------------- | ---- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| COS-CPRICE-001 | 400  | The import form is not usable (names what is wrong)        | `POST /admin/central-prices/import` that is not multipart, has no `file` or an empty one, a file in another field, an unknown / repeated / over-long text field, or more parts than the form allows. messageKey `admin.centralPrices.error.invalidUpload`                                               |
+| COS-CPRICE-002 | 415  | Upload a .csv (UTF-8) or .xlsx file                        | The file name is not `.csv` / `.xlsx`, or its bytes contradict the name (a workbook named `.csv`, text named `.xlsx`). Nothing is recorded. messageKey `admin.centralPrices.error.unsupportedFileType`                                                                                                  |
+| COS-CPRICE-003 | 413  | The upload exceeds the limit                               | The file is over 5 MiB. `details.max_file_bytes`. messageKey `admin.centralPrices.error.fileTooLarge`                                                                                                                                                                                                   |
+| COS-CPRICE-004 | 422  | The file could not be imported (names why)                 | CSV not UTF-8 or unparseable, unreadable .xlsx, required columns missing, no data rows, more than 20,000 rows. `details`: `run_id`, `reason` (`CSV_NOT_UTF8`, `FILE_UNREADABLE`, `EMPTY_FILE`, `MISSING_COLUMNS`, `NO_DATA_ROWS`, `TOO_MANY_ROWS`). messageKey `admin.centralPrices.error.importFailed` |
+| COS-CPRICE-005 | 400  | cursor is not valid                                        | `GET /admin/central-prices` or `GET /central-prices` with a `cursor` this API did not issue. messageKey `centralPrices.error.invalidCursor`                                                                                                                                                             |
+| COS-CPRICE-006 | 422  | No usable central price for this line (names why)          | BOQ item create / update with `use_central_price: true` when the line has no `item_code`, no ACTIVE central price exists for the code, or the price's currency is not the line's. `details`: `item_code`, `central_price_currency`. messageKey `boq.centralPrice.error.unavailable`                     |
+| COS-CPRICE-007 | 400  | Send either unit_cost or use_central_price: true, not both | BOQ item create / update carrying both. messageKey `boq.centralPrice.error.unitCostConflict`                                                                                                                                                                                                            |
+
+---
+
+## COS-BLDG / FLOR / ROOM / STRC / UNIT / ASST — Project spatial hierarchy + assets (Phase 3, 2026-07-05)
+
+Full-CRUD backing entities under the project domain (§10.2 / §11.2). `-001` = entity not found;
+`-002` = parent not found on create (nested-resource parent check).
+
+| Code         | HTTP | Message                   | Trigger                                       |
+| ------------ | ---- | ------------------------- | --------------------------------------------- |
+| COS-BLDG-001 | 404  | Building not found        | buildingId not found for tenant               |
+| COS-BLDG-002 | 404  | Parent project not found  | create under a project absent for the tenant  |
+| COS-FLOR-001 | 404  | Floor not found           | floorId not found for tenant                  |
+| COS-FLOR-002 | 404  | Parent building not found | create under a building absent for the tenant |
+| COS-ROOM-001 | 404  | Room not found            | roomId not found for tenant                   |
+| COS-ROOM-002 | 404  | Parent floor not found    | create under a floor absent for the tenant    |
+| COS-STRC-001 | 404  | Structure not found       | structureId not found for tenant              |
+| COS-STRC-002 | 404  | Parent building not found | create under a building absent for the tenant |
+| COS-UNIT-001 | 404  | Unit not found            | unitId not found for tenant                   |
+| COS-UNIT-002 | 404  | Parent building not found | create under a building absent for the tenant |
+| COS-ASST-001 | 404  | Asset not found           | assetId not found for tenant                  |
+| COS-ASST-002 | 404  | Parent project not found  | create under a project absent for the tenant  |

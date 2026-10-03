@@ -1,0 +1,1614 @@
+{
+  "admin": {
+    "title": "แผงผู้ดูแลระบบ (System Admin)",
+    "unauthorized": "ต้องมีสิทธิ์ SYSTEM_ADMIN เท่านั้น",
+    "colCode": "รหัสองค์กร",
+    "colName": "ชื่อองค์กร",
+    "colPlan": "แพ็กเกจ",
+    "colDb": "Dedicated DB",
+    "shared": "แชร์",
+    "assignDb": "กำหนด DB",
+    "dbUrlOptional": "Dedicated DB URL (ไม่บังคับ)",
+    "createTenant": "สร้างองค์กร",
+    "markContracted": "ทำเครื่องหมายว่าทำสัญญาแล้ว",
+    "markContractedConfirm": "เริ่ม provisioning DB เฉพาะ — พิมพ์รหัส tenant เพื่อยืนยัน:",
+    "contractRef": "เลขอ้างอิงสัญญา (ถ้ามี)",
+    "nav": {
+      "section": "งานปฏิบัติการแพลตฟอร์ม",
+      "tenants": "ผู้เช่า",
+      "dbFleet": "ฐานข้อมูลเฉพาะ",
+      "migrations": "การย้ายข้อมูล",
+      "auditLog": "บันทึกการตรวจสอบทั้งระบบ",
+      "centralPrices": "ราคากลาง",
+      "settings": "ตั้งค่าระบบ",
+      "unavailable": "ยังไม่พร้อมใช้งาน",
+      "menu": "เมนูผู้ดูแลระบบ",
+      "clusterInfra": "โครงสร้างคลัสเตอร์",
+      "migrationApprovals": "อนุมัติการย้ายข้อมูล",
+      "auditTrail": "บันทึกตรวจสอบทั้งระบบ",
+      "instances": "อินสแตนซ์"
+    },
+    "list": {
+      "breadcrumbSection": "ผู้ดูแลแพลตฟอร์ม",
+      "breadcrumbPage": "รายชื่อผู้เช่า",
+      "title": "รายชื่อผู้เช่าและฐานข้อมูลเฉพาะ",
+      "subtitle": "จัดการการจัดสรรผู้เช่า การกำหนดเส้นทางฐานข้อมูลเฉพาะ และสัญญาองค์กร",
+      "searchLabel": "ค้นหาผู้เช่า",
+      "searchPlaceholder": "ค้นหารหัส ชื่อ โฮสต์ หรือภูมิภาค…",
+      "planFilter": "กรองตามแผน",
+      "allPlans": "ทุกแผน",
+      "loading": "กำลังโหลดรายชื่อผู้เช่า",
+      "loadError": "โหลดรายชื่อผู้เช่าไม่ได้",
+      "provisioningError": "โหลดสถานะการจัดสรรไม่ได้ — คอลัมน์การจัดสรรจึงไม่ครบ",
+      "empty": "ไม่พบผู้เช่าที่ตรงกัน",
+      "created": "สร้างผู้เช่าแล้ว:",
+      "showing": "แสดง",
+      "of": "จาก",
+      "tenants": "ผู้เช่า",
+      "previous": "ก่อนหน้า",
+      "next": "ถัดไป",
+      "page": "หน้า",
+      "pagination": "การแบ่งหน้า",
+      "importCentralPrices": "นำเข้าราคากลาง",
+      "clusterZone": "โซนคลัสเตอร์"
+    },
+    "plan": {
+      "STARTER": "Starter",
+      "PROFESSIONAL": "Professional",
+      "ENTERPRISE": "Enterprise"
+    },
+    "metrics": {
+      "total": "ผู้เช่าทั้งหมด",
+      "active": "ใช้งานอยู่",
+      "inactive": "ปิดใช้งาน",
+      "thisWeek": "สัปดาห์นี้",
+      "dedicated": "ผู้เช่าที่มีฐานข้อมูลเฉพาะ",
+      "dedicatedNote": "ใช้ฐานข้อมูลของตนเอง",
+      "gates": "จุดอนุมัติการย้ายข้อมูล",
+      "waiting": "รออนุมัติ",
+      "gatesNote": "งานที่รอการอนุมัติ",
+      "enterpriseFleet": "ฐานข้อมูลเฉพาะองค์กร",
+      "instances": "อินสแตนซ์",
+      "isolation": "แยกข้อมูลเด็ดขาด",
+      "avgGateTime": "เวลารออนุมัติเฉลี่ย",
+      "compute": "ทรัพยากรประมวลผล"
+    },
+    "col": {
+      "code": "รหัส",
+      "name": "ชื่อ",
+      "plan": "แผน",
+      "status": "สถานะ",
+      "db": "เส้นทางฐานข้อมูล",
+      "region": "ภูมิภาค",
+      "provisioning": "การจัดสรร",
+      "actions": "การดำเนินการ"
+    },
+    "status": {
+      "active": "ใช้งานอยู่",
+      "inactive": "ปิดใช้งาน",
+      "transit": "ระหว่างย้ายข้อมูล",
+      "pending": "รอดำเนินการ"
+    },
+    "pooled": "(ฐานข้อมูลร่วม)",
+    "provisioning": {
+      "none": "—",
+      "unreadable": "อ่านสถานะไม่ได้",
+      "unrecognised": "สถานะที่ไม่รู้จัก",
+      "state": {
+        "CREATING_RDS": "กำลังสร้างฐานข้อมูล",
+        "RUNNING_MIGRATIONS": "กำลังรัน migration",
+        "ASSIGNING_DB": "กำลังกำหนดฐานข้อมูล",
+        "AWAITING_APPROVAL": "รออนุมัติ",
+        "MIGRATING_DATA": "กำลังย้ายข้อมูล",
+        "VERIFYING": "กำลังตรวจสอบเส้นทาง",
+        "PROVISIONING_TOPICS": "กำลังจัดสรร topic",
+        "COMPLETED": "พร้อมใช้งาน",
+        "ABORTING": "กำลังยกเลิก",
+        "ABORTED": "ยกเลิกแล้ว"
+      },
+      "active": "ใช้งานอยู่"
+    },
+    "gate": {
+      "eyebrow": "จุดอนุมัติการย้ายข้อมูล",
+      "body": "จัดสรรฐานข้อมูลเฉพาะแล้ว และรออนุมัติก่อนย้ายข้อมูล",
+      "approve": "อนุมัติการย้ายข้อมูล",
+      "abort": "ยกเลิก",
+      "kind": "เปลี่ยนระดับการแยกข้อมูล",
+      "tenant": "ผู้เช่า",
+      "reviewPlan": "ดูแผน"
+    },
+    "decision": {
+      "approveTitle": "อนุมัติการย้ายข้อมูล",
+      "abortTitle": "ยกเลิกการจัดสรร",
+      "approveBody": "งานจะดำเนินต่อ: ย้ายข้อมูลผู้เช่าไปยังฐานข้อมูลเฉพาะ และตรวจสอบเส้นทาง",
+      "abortBody": "งานจะหยุดและย้อนกลับ: ยกเลิกการกำหนดฐานข้อมูลเฉพาะ และลบ RDS instance",
+      "confirmApprove": "อนุมัติ",
+      "confirmAbort": "ยกเลิกการจัดสรร",
+      "cancel": "ปิด"
+    },
+    "justification": {
+      "label": "เหตุผล",
+      "help": "เหตุผลของการดำเนินการนี้ จะถูกบันทึกใน audit log (10–500 ตัวอักษร)",
+      "prompt": "เหตุผลของการดำเนินการนี้ — บันทึกใน audit log (อย่างน้อย 10 ตัวอักษร):",
+      "tooShort": "ต้องระบุเหตุผลอย่างน้อย 10 ตัวอักษร ยังไม่มีการเปลี่ยนแปลงใด"
+    },
+    "row": {
+      "assignDbPrompt": "URL ฐานข้อมูลเฉพาะ (postgresql://…):",
+      "view": "ดูรายละเอียด",
+      "auditLog": "บันทึกตรวจสอบ",
+      "approveGate": "อนุมัติ",
+      "enterpriseOnly": "เฉพาะแผน Enterprise"
+    },
+    "errors": {
+      "invalid": "คำขอไม่ถูกต้อง โปรดตรวจสอบข้อมูลและเหตุผล",
+      "forbidden": "บทบาทของคุณทำรายการนี้ไม่ได้",
+      "notFound": "ไม่พบผู้เช่านี้ หรือสถานะไม่อนุญาตให้ทำรายการนี้",
+      "noRun": "ผู้เช่านี้ไม่มีงานจัดสรรฐานข้อมูล",
+      "codeTaken": "รหัสผู้เช่านี้ถูกใช้แล้ว",
+      "notAtGate": "งานไม่ได้รออนุมัติแล้ว โปรดรีเฟรชเพื่อดูสถานะ",
+      "conflict": "สถานะของผู้เช่าไม่อนุญาตให้ทำรายการนี้",
+      "stateUnreadable": "อ่านสถานะงานไม่ได้ จึงยังไม่ได้ส่งคำสั่ง โปรดลองอีกครั้ง",
+      "generic": "เกิดข้อผิดพลาด ยังไม่มีการเปลี่ยนแปลงใด"
+    },
+    "create": {
+      "title": "สร้างผู้เช่าใหม่",
+      "cancel": "ยกเลิก",
+      "submit": "สร้างผู้เช่า",
+      "submitting": "กำลังสร้างผู้เช่า",
+      "required": "จำเป็น",
+      "optionalEnterprise": "ไม่บังคับ",
+      "codeLabel": "รหัสผู้เช่า",
+      "codeRule": "2–50 ตัวอักษร: a–z ตัวพิมพ์เล็ก ตัวเลข 0–9 และขีดล่าง (_) เท่านั้น",
+      "nameLabel": "ชื่อผู้เช่า",
+      "nameRule": "ชื่อบริษัทหรือนิติบุคคลเต็ม (2–255 ตัวอักษร)",
+      "planLabel": "เลือกแผนและระดับสถาปัตยกรรม",
+      "planStarter": "คลัสเตอร์ฐานข้อมูลรวมหลายผู้เช่า",
+      "planProfessional": "ฐานข้อมูลรวม รองรับการใช้งานพร้อมกันสูง",
+      "planEnterprise": "มีสิทธิ์ใช้ฐานข้อมูลเฉพาะ",
+      "dbUrlLabel": "URI ฐานข้อมูลเฉพาะ",
+      "dbUrlRule": "รูปแบบ: postgresql://[user]:[password]@[host]:[port]/[database]",
+      "codeValid": "รูปแบบรหัสผู้เช่าถูกต้องและยังไม่มีผู้ใช้",
+      "nameValid": "ชื่อผู้เช่าถูกต้อง",
+      "dbUrlValid": "รูปแบบ URI การเชื่อมต่อ PostgreSQL ถูกต้อง เข้าถึงโฮสต์ได้ในเครือข่ายภายในคลัสเตอร์",
+      "planEnterpriseNote": "เลือกแผน Enterprise แล้ว — เปิดการตั้งค่าฐานข้อมูลเฉพาะ",
+      "dbUrlEnterpriseOnly": "เลือกแผน Enterprise เพื่อระบุฐานข้อมูลเฉพาะ",
+      "justificationRule": "เหตุผลในการสร้างผู้เช่านี้ บันทึกใน audit log (10–500 ตัวอักษร)",
+      "breadcrumb": "สร้างผู้เช่าใหม่",
+      "subtitle": "จัดสรรองค์กรผู้เช่าใหม่ด้วย schema แยก หรืออินสแตนซ์ฐานข้อมูลเฉพาะ",
+      "close": "ปิดหน้าต่าง",
+      "tierStarter": "ประมวลผลร่วม",
+      "tierProfessional": "IOPS แบบแบ่งระดับ",
+      "tierEnterprise": "● ฐานข้อมูลเฉพาะ",
+      "vpcBadge": "Internal VPC Mesh",
+      "portPrefix": "พอร์ต",
+      "portSuffix": "เปิด",
+      "lifecycleTitle": "วงจรการจัดสรรอัตโนมัติ:",
+      "lifecycleBody": "เมื่อส่งคำขอนี้ ระบบจะจัดสรรความลับของผู้เช่าผ่าน HashiCorp Vault ลงทะเบียน schema ในแคตตาล็อกกลาง และตั้งค่าใบรับรอง mutual TLS สำหรับ EMQX streaming broker โดยอัตโนมัติ",
+      "zone": "โซน: ap-southeast-1a (Headroom: 72%)"
+    },
+    "connection": {
+      "online": "ซิงก์แล้ว",
+      "offline": "เชื่อมต่อ API ไม่ได้",
+      "checking": "กำลังเชื่อมต่อ"
+    },
+    "pulse": {
+      "title": "สถานะคลัสเตอร์",
+      "emqx": "EMQX Broker:",
+      "timescale": "Timescale Chunks:",
+      "mesh": "Mesh Latency:",
+      "queue": "Queue Backlog:"
+    },
+    "telemetry": {
+      "emqx": "EMQX",
+      "pgFleet": "PG Fleet",
+      "ded": "เฉพาะ",
+      "pool": "ร่วม"
+    },
+    "account": {
+      "menu": "บัญชี"
+    },
+    "globalSearch": "ค้นหาผู้เช่า รหัส ฐานข้อมูลเฉพาะ...",
+    "rowModal": {
+      "zone": "โซน:"
+    },
+    "markModal": {
+      "title": "ทำเครื่องหมายผู้เช่าเป็นสัญญาองค์กร",
+      "target": "ผู้เช่าเป้าหมาย:",
+      "targetInstance": "อินสแตนซ์เฉพาะเป้าหมาย",
+      "checklist": "รายการตรวจสอบเงื่อนไข",
+      "of": "จาก",
+      "satisfied": "ผ่าน",
+      "pre": {
+        "plan": {
+          "title": "แผนของผู้เช่าเป็น ENTERPRISE",
+          "met": "plan_type เป็น ENTERPRISE",
+          "unmet": "ต้องเป็นแผน ENTERPRISE"
+        },
+        "active": {
+          "title": "ผู้เช่าเปิดใช้งานอยู่",
+          "met": "is_active เป็น true",
+          "unmet": "เปิดใช้งานผู้เช่าก่อน"
+        },
+        "noDb": {
+          "title": "ยังไม่มีฐานข้อมูลเฉพาะ",
+          "met": "dedicated_db_url ยังเป็น NULL (ยังไม่ได้จัดสรร)",
+          "unmet": "มีฐานข้อมูลเฉพาะแล้ว"
+        }
+      },
+      "metTag": "ผ่าน",
+      "unmetTag": "ไม่ผ่าน",
+      "safetyNotice": "ผ่านเงื่อนไขครบ 3 ข้อ การอนุมัติจะเริ่มการแยก schema ของผู้เช่าอัตโนมัติและกระบวนการแยกข้อมูลเข้มงวดตาม GDPR/PDPA",
+      "transition": "ยืนยันการเปลี่ยนสถานะ",
+      "shift": "การเปลี่ยนสถาปัตยกรรมการแยกข้อมูล",
+      "currentTier": "ระดับปัจจุบัน",
+      "pooled": "ฐานข้อมูลรวมหลายผู้เช่า",
+      "pooledNote": "ประมวลผลและ schema ร่วมกัน",
+      "targetTier": "ระดับเป้าหมาย",
+      "dedicated": "ฐานข้อมูลเฉพาะ",
+      "typePrefix": "พิมพ์",
+      "typeSuffix": "ด้านล่างเพื่อยืนยันการเปลี่ยนเป็นระดับ Enterprise:",
+      "matches": "รหัสผู้เช่าตรงกับเป้าหมายที่ตรวจสอบ",
+      "lifecycle": "เมื่อส่ง ระบบจะสร้าง Vault token ย้าย schema ข้อมูลเบื้องหลังอัตโนมัติ และส่งเหตุการณ์",
+      "zone": "โซนคลัสเตอร์:",
+      "mesh": "Provisioning Mesh:",
+      "meshValue": "พร้อม (Latency: 4.2ms)",
+      "confirm": "ยืนยันสัญญาองค์กร"
+    },
+    "assignModal": {
+      "title": "กำหนดฐานข้อมูลเฉพาะ",
+      "tenant": "ผู้เช่า:",
+      "code": "รหัส:",
+      "tier": "ระดับ:",
+      "gates": "เงื่อนไขการย้ายโครงสร้างพื้นฐาน",
+      "gateStatus": "สถานะเงื่อนไข:",
+      "allClear": "ผ่านทั้งหมด",
+      "gate": {
+        "reachable": {
+          "title": "อินสแตนซ์พร้อมและเข้าถึงได้",
+          "note": "จัดสรรอินสแตนซ์ PostgreSQL เฉพาะแล้วและเข้าถึงได้"
+        },
+        "migrated": {
+          "title": "รัน migration แล้ว",
+          "note": "รัน `prisma migrate deploy` กับฐานข้อมูลเฉพาะแล้ว"
+        },
+        "dataMoved": {
+          "title": "ย้ายข้อมูลเดิมแล้ว",
+          "note": "ย้ายข้อมูลเดิมแล้ว (กรณีอัปเกรดจากฐานข้อมูลร่วม)"
+        }
+      },
+      "confirmed": "ผู้ดูแลยืนยันแล้ว",
+      "tickToConfirm": "ติ๊กเพื่อยืนยัน",
+      "uriLabel": "URI การเชื่อมต่อฐานข้อมูลเฉพาะ",
+      "hostValidated": "ตรวจสอบโฮสต์และยืนยันตัวตนแล้ว",
+      "poolLabel": "Sharding Pool และโหนดเป้าหมาย",
+      "poolNote": "จัดสรรให้อินสแตนซ์ประมวลผลแยก c6i.4xlarge",
+      "poolOption1": "db-ent-043.cos.internal (NVMe Tier, 1TB head)",
+      "poolOption2": "db-ent-044.cos.internal (NVMe Tier, 2TB head)",
+      "poolOption3": "db-ent-045.cos.internal (NVMe Tier, Cold Standby)",
+      "proxyLabel": "กลยุทธ์ Ingress Mesh Proxy",
+      "proxyNote": "Envoy proxy เปลี่ยนเส้นทาง query ที่ทำงานอยู่โดยอัตโนมัติ",
+      "proxyOption1": "Transparent Proxy (สลับโดยไม่หยุดระบบ)",
+      "proxyOption2": "Strict Drained Session Cutover (บัฟเฟอร์ 30 วินาที)",
+      "proxyOption3": "สลับในช่วง Maintenance Window",
+      "noticeTitle": "ประกาศการเปลี่ยนแปลงสิทธิ์สูง",
+      "noticeBefore": "การกำหนดฐานข้อมูลเฉพาะจะปรับกฎการกำหนดเส้นทางเครือข่ายขาเข้าและแยกทรัพยากรประมวลผลของผู้เช่า เซสชันที่ใช้งานอยู่จะ",
+      "zeroDowntime": "ไม่หยุดทำงาน",
+      "noticeAfter": "ผ่านการเชื่อมต่อแบบ transparent proxy ความลับ HashiCorp Vault และใบรับรอง EMQX MQTT จะถูกสลับพร้อมกัน",
+      "specWarning": "เมื่อกำหนดแล้ว คำขอใหม่ทั้งหมดของผู้เช่านี้จะไปที่ฐานข้อมูลเฉพาะ ตรวจสอบให้แน่ใจว่าย้ายข้อมูลเสร็จแล้วก่อนดำเนินการ",
+      "routingMesh": "Routing Mesh:",
+      "ready": "พร้อม",
+      "confirm": "ยืนยันการกำหนดฐานข้อมูล"
+    },
+    "deactivateModal": {
+      "title": "ระงับผู้เช่า",
+      "lead": "การดำเนินการทำลายสิทธิ์สูง",
+      "impactA": "การระงับผู้เช่านี้จะเพิกถอน",
+      "impactSessions": "เซสชันผู้ใช้ที่ใช้งานอยู่กว่า 120 รายการ",
+      "impactB": " ทันที หยุด worker delta-sync เบื้องหลัง ระงับ API token และนำโหนดประมวลผลเฉพาะ",
+      "impactC": "เข้าสู่สถานะสำรองแบบกักกัน",
+      "check": {
+        "sessions": {
+          "label": "เซสชันผู้ใช้ที่ใช้งานอยู่:",
+          "value": "ออนไลน์ 14 (จะถูกตัดทันที)"
+        },
+        "sync": {
+          "label": "งานซิงก์ที่กำลังทำ:",
+          "value": "ค้าง 0 (ปิดอย่างเรียบร้อย)"
+        },
+        "preservation": {
+          "label": "การเก็บรักษาข้อมูล:",
+          "value": "บันทึก snapshot แบบแก้ไขไม่ได้ตาม PDPA/GDPR"
+        }
+      },
+      "typeSuffix": "ด้านล่างเพื่อยืนยันการระงับผู้เช่า:",
+      "matches": "รหัสผู้เช่าตรงกัน",
+      "footnote": "การดำเนินการนี้ถูกบันทึกถาวรใน Global Audit Trail และย้อนกลับอัตโนมัติไม่ได้หากไม่มีการอนุมัติแบบสองกุญแจของ Platform Operator",
+      "interlock": "Safety Interlock:",
+      "engaged": "เปิดใช้งาน",
+      "confirm": "ยืนยัน",
+      "cancel": "ยกเลิก"
+    },
+    "detail": {
+      "title": "รายละเอียดผู้เช่าและคอนโซลการจัดสรร",
+      "tabs": "ส่วนของคอนโซล",
+      "kpi": {
+        "cluster": "สถานะคลัสเตอร์ฐานข้อมูล",
+        "compute": "การประมวลผลและพูล",
+        "sync": "คิว Delta-Sync",
+        "emqx": "สตรีม EMQX",
+        "tokens": "โควตาโทเค็น AI",
+        "reset": "รีเซ็ตรอบ"
+      },
+      "tab": {
+        "overview": "ภาพรวมและสถานะ",
+        "topology": "โครงสร้างฐานข้อมูล",
+        "secrets": "ความลับและใบรับรอง mTLS",
+        "audit": "บันทึกตรวจสอบและเหตุการณ์"
+      },
+      "uri": {
+        "title": "URI เส้นทางฐานข้อมูลเฉพาะ",
+        "pooled": "ฐานข้อมูลร่วม — ไม่มี URI เฉพาะ",
+        "copy": "คัดลอก Connection String",
+        "reachability": "ตรวจสอบการเชื่อมต่อ:"
+      },
+      "engine": {
+        "title": "PostgreSQL Engine และ TimescaleDB Telemetry",
+        "replica": "sync-replica:",
+        "lag": "Replication Lag",
+        "chunks": "Timescale Chunks",
+        "iops": "การใช้ IOPS",
+        "storage": "การจัดสรร NVMe เฉพาะ",
+        "dedicatedStorage": "ฐานข้อมูลเฉพาะ",
+        "sharedStorage": "ฐานข้อมูลร่วม"
+      },
+      "schema": {
+        "title": "เวอร์ชัน Schema และระดับการแยกข้อมูล",
+        "name": "ชื่อ Schema:",
+        "ddl": "DDL Migration ล่าสุด:",
+        "drift": "สถานะ Schema Drift:",
+        "created": "สร้างผู้เช่าเมื่อ:"
+      },
+      "vault": {
+        "title": "mTLS และ Vault Lease",
+        "path": "Vault AppRole Token Path",
+        "pathNote": "ระยะเวลา Lease:",
+        "fingerprint": "ลายนิ้วมือใบรับรอง mTLS (SHA-256)",
+        "fingerprintNote": "Validated by"
+      },
+      "policy": {
+        "title": "นโยบายการแยกข้อมูล",
+        "isolation": "การแยกฐานข้อมูล:",
+        "isolationDedicated": "ผู้เช่ามีฐานข้อมูล PostgreSQL เฉพาะ",
+        "isolationShared": "ผู้เช่าใช้ฐานข้อมูลร่วม แยกด้วย row-level security",
+        "compliance": "การปฏิบัติตามกฎระเบียบ:",
+        "retention": "การเก็บ Snapshot:"
+      },
+      "ops": {
+        "title": "การดำเนินการ",
+        "elevated": "ต้องใช้สิทธิ์สูง",
+        "rotate": "หมุนเวียนความลับ HashiCorp Vault",
+        "rotateNote": "ไม่หยุดระบบ",
+        "flush": "ล้างคิว Delta แบบ Synchronous",
+        "flushNote": "Force ACK",
+        "integrity": "ตรวจสอบความสมบูรณ์เชิงลึก",
+        "integrityNote": "อ่านอย่างเดียว"
+      },
+      "action": {
+        "audit": "เปิดบันทึกตรวจสอบ",
+        "assign": "กำหนดฐานข้อมูลเฉพาะ",
+        "mark": "ทำเครื่องหมายเป็นสัญญาองค์กร",
+        "deactivate": "ระงับผู้เช่า"
+      },
+      "footer": {
+        "mesh": "Cluster Mesh"
+      },
+      "close": "ปิด",
+      "terminal": "เปิด Telemetry Terminal"
+    },
+    "cluster": {
+      "breadcrumb": "เส้นทางนำทาง",
+      "crumb1": "PLATFORM_OPERATOR",
+      "crumb2": "CLUSTER_TOPOLOGY",
+      "crumb3": "INFRASTRUCTURE_NODES",
+      "title": "โครงสร้างพื้นฐานคลัสเตอร์",
+      "refresh": "รีเฟรช",
+      "ssh": "SSH",
+      "provision": "PROVISIONING",
+      "kpi": {
+        "cluster": "คลัสเตอร์",
+        "vcpu": "vCPU Pool",
+        "mem": "หน่วยความจำ:",
+        "iot": "สตรีม IoT",
+        "msgs": "ข้อความ/วินาที",
+        "cap": "ขีดจำกัด:",
+        "fleet": "โครงสร้าง DB Fleet",
+        "active": "ใช้งานอยู่",
+        "dedicated": "เฉพาะ",
+        "pooled": "รวม",
+        "pgbouncer": "PgBouncer:",
+        "timescale": "TimescaleDB",
+        "chunk": "Chunk Roll",
+        "nvme": "NVMe:"
+      },
+      "nodes": "คลัสเตอร์และพ็อด",
+      "filter": {
+        "all": "ทั้งหมด",
+        "db": "DB",
+        "compute": "ประมวลผล",
+        "iot": "IoT",
+        "gateway": "เกตเวย์"
+      },
+      "filterNodes": "กรองโหนด...",
+      "live": "สด",
+      "col": {
+        "node": "โหนดและโฮสต์",
+        "service": "บริการ / บทบาท",
+        "zone": "โซน",
+        "status": "สถานะ",
+        "cpu": "โหลด CPU",
+        "memory": "หน่วยความจำ / ขีดจำกัด",
+        "disk": "ดิสก์และ IOPS",
+        "latency": "Latency"
+      },
+      "foot": {
+        "mesh": "Mesh:",
+        "provisioned": "จัดสรรแล้ว:",
+        "memory": "Memory Pool:"
+      },
+      "integration": {
+        "title": "การเชื่อมต่อภายนอก",
+        "egp": {
+          "name": "e-GP Gateway",
+          "note": "กรมบัญชีกลาง"
+        },
+        "promptpay": {
+          "name": "PromptPay / BoT",
+          "note": "SCB & KBank Clearing Adapters"
+        },
+        "did": {
+          "name": "W3C DID Resolver",
+          "note": "การลงนามสัญญาและตรวจสอบ VC"
+        },
+        "line": {
+          "name": "LINE & SES Hub",
+          "note": "แจ้งเตือนความปลอดภัยและสรุปรายวัน"
+        }
+      },
+      "envelope": {
+        "title": "ขอบเขตสถาปัตยกรรม",
+        "ratified": "PO RATIFIED",
+        "chunk": {
+          "label": "นโยบาย Timescale Chunk",
+          "policy": "เริ่ม 7 วัน + กฎขนาดหน่วยความจำ 25%"
+        },
+        "emqx": {
+          "label": "เพดาน EMQX Telemetry",
+          "policy": "Σ(อุปกรณ์ × อัตรา) ≤ 25K msg/s QoS1"
+        },
+        "ha": {
+          "label": "High Availability และ Multi-AZ",
+          "policy": "Primary BKK-1a, Warm Standby BKK-1b"
+        },
+        "configure": "ตั้งค่าขนาดคลัสเตอร์"
+      }
+    },
+    "fleet": {
+      "title": "การจัดการฐานข้อมูลเฉพาะ",
+      "refresh": "รีเฟรช FLEET",
+      "pool": "PGBOUNCER POOL",
+      "provision": "NEW DEDICATED DB",
+      "kpi": {
+        "compute": "ความจุการประมวลผล",
+        "iops": "หน่วยความจำและ IOPS",
+        "storage": "พื้นที่จัดเก็บและ Vault Backup",
+        "ha": "HA MULTI-AZ REPLICATION"
+      },
+      "filters": "ตัวกรอง Fleet",
+      "filter": {
+        "all": "ทั้งหมด",
+        "healthy": "ปกติ",
+        "gate": "MAINTENANCE",
+        "failover": "พร้อม FAILOVER"
+      },
+      "zone": "โซน:",
+      "sortBy": "เรียงตาม:",
+      "sort": {
+        "saturation": "CPU / Memory Saturation (มาก → น้อย)",
+        "storage": "พื้นที่ที่ใช้ (มาก → น้อย)",
+        "code": "รหัสผู้เช่า (A-Z)",
+        "created": "วันที่สร้างอินสแตนซ์"
+      },
+      "export": "ส่งออก CSV",
+      "directory": "รายการอินสแตนซ์เฉพาะ",
+      "showing": "แสดง",
+      "legend": {
+        "replicated": "REPLICATED",
+        "standby": "STANDBY",
+        "gate": "MIGRATING"
+      },
+      "col": {
+        "instance": "อินสแตนซ์และ ENDPOINT",
+        "tenant": "ผู้เช่า",
+        "archetype": "ประเภทโหนด",
+        "zone": "โซน / HA",
+        "cpu": "CPU / หน่วยความจำ",
+        "storage": "พื้นที่ / IOPS",
+        "cdc": "CDC LAG",
+        "operations": "การดำเนินการ"
+      },
+      "empty": "ยังไม่มีผู้เช่าที่มีฐานข้อมูลเฉพาะ",
+      "footShowing": "แสดง",
+      "footOf": "จากทั้งหมด",
+      "footUnit": "Dedicated Instances",
+      "tls": "TLS 1.3 Strict Enclave:",
+      "kms": "KMS Root Key ID:",
+      "prev": "ก่อนหน้า",
+      "next": "ถัดไป",
+      "row": {
+        "gate": "สถานะ: รออนุมัติการย้ายข้อมูล (§34.5)",
+        "terminal": "Terminal SSH Gate"
+      },
+      "envelope": {
+        "boundary": {
+          "title": "ZERO-DATA-LEAKAGE BOUNDARY",
+          "body": "โหนด Dedicated DB แต่ละโหนดแยก VPC Enclave มี Dedicated KMS Key ประจำ Tenant อย่างสมบูรณ์ ไม่มีการแชร์ Connection Pool, MemBuffer หรือ Memory Bus ร่วมกับระบบ Pooled DB"
+        },
+        "justification": {
+          "title": "MANDATORY OPERATOR JUSTIFICATION",
+          "body": "ทุกการสั่งการระดับ Fleet (Scale, Config, Failover, Snapshot) บังคับระบุเหตุผลตาม §6.7 และบันทึกใน Global Audit Log"
+        },
+        "standby": {
+          "title": "AUTOMATED STANDBY & RPO GUARANTEE",
+          "body": "จัดสรร Standby Node ข้าม Availability Zone (ap-se-1a/b/c) อัตโนมัติ พร้อมสตรีมซิงโครไนซ์ Zero-Lag รองรับ Automatic Failover ภายในเวลาไม่เกิน 30 วินาทีตาม SLA Enterprise"
+        }
+      }
+    },
+    "migrations": {
+      "crumb1": "ADMIN_CONSOLE",
+      "crumb2": "DATABASE INFRASTRUCTURE",
+      "crumb3": "DATA_MIGRATIONS",
+      "title": "การย้ายข้อมูลและขั้นอนุมัติ",
+      "archive": "เก็บถาวร",
+      "newJob": "งานใหม่",
+      "kpis": "สรุปการย้ายข้อมูล",
+      "kpi": {
+        "active": "การย้ายที่ดำเนินอยู่",
+        "activeUnit": "งาน",
+        "pending": "รออนุมัติ",
+        "working": "กำลังดำเนินการ",
+        "volume": "ปริมาณการถ่ายโอน (24 ชม.)",
+        "gates": "ขั้นอนุมัติโดยบุคคล",
+        "pendingGate": "รออนุมัติ",
+        "signoff": "ต้องให้ผู้ดูแลสิทธิ์สูงลงนาม",
+        "verification": "สถานะการตรวจสอบ"
+      },
+      "gate": {
+        "title": "Pipeline Gate: การดำเนินการสิทธิ์สูงที่ต้องระบุเหตุผล",
+        "jobId": "JOB-ID:",
+        "enclave": "Enclave:",
+        "none": "ไม่มีการจัดสรรที่รออนุมัติ",
+        "target": "ผู้เช่าเป้าหมาย",
+        "source": "ฐานข้อมูลต้นทาง",
+        "sharedDb": "ฐานข้อมูลร่วมของแพลตฟอร์ม",
+        "sharedPool": "(Shared Pool)",
+        "targetNode": "โหนดฐานข้อมูลปลายทาง",
+        "dedicated": "(Dedicated)",
+        "payload": "ขนาดข้อมูล",
+        "objects": "SCHEMA OBJECTS",
+        "rows": "จำนวนแถวทั้งหมด",
+        "preflight": "การตรวจสอบก่อนเริ่มอัตโนมัติ",
+        "passed": "ผ่าน",
+        "check": {
+          "provisioned": "จัดสรรโหนด Dedicated แล้ว (จากสถานะการทำงาน)",
+          "migrated": "รัน Schema Migration บนโหนดเฉพาะแล้ว (จากสถานะการทำงาน)",
+          "snapshot": "Snapshot สำรองแบบแก้ไขไม่ได้",
+          "replication": "Replication Stream Lag:"
+        },
+        "checksum": "Root Checksum:",
+        "abort": "ยกเลิก",
+        "approve": "อนุมัติและเริ่ม",
+        "ready": "READY_FOR_COMMENCE"
+      },
+      "ledger": {
+        "title": "บันทึกงานย้ายข้อมูล",
+        "encrypted": "เข้ารหัสขณะจัดเก็บ",
+        "filter": "กรองตามสถานะ",
+        "all": "ทุกสถานะ",
+        "gate": "รออนุมัติ",
+        "working": "กำลังดำเนินการ",
+        "completed": "เสร็จสิ้น",
+        "stopped": "ยกเลิกแล้ว",
+        "refresh": "รีเฟรช",
+        "empty": "ยังไม่มีการจัดสรร",
+        "review": "ตรวจสอบ",
+        "action": {
+          "working": "ดู",
+          "completed": "ใบรับ",
+          "stopped": "ตรวจสอบ",
+          "unknown": "ดู"
+        },
+        "cdc": "PostgreSQL Logical Replication (CDC)",
+        "tls": "TLS 1.3 Strict Encrypted",
+        "enforced": "Ledger Enforced",
+        "waiting": "WAITING_APPROVAL"
+      },
+      "col": {
+        "job": "Job ID",
+        "tenant": "รหัสผู้เช่า",
+        "route": "ต้นทาง → ปลายทาง",
+        "status": "สถานะ",
+        "progress": "ความคืบหน้า",
+        "cdc": "CDC Lag",
+        "operator": "ผู้ดำเนินการ"
+      }
+    },
+    "auditModal": {
+      "title": "บันทึกการตรวจสอบของผู้เช่า",
+      "tenant": "ผู้เช่า:",
+      "code": "รหัส:",
+      "node": "โหนด:",
+      "export": "ส่งออก CSV",
+      "total30d": "ทั้งหมด (30 วัน):",
+      "security": "ความปลอดภัย:",
+      "active": "มีผล:",
+      "search": "ค้นหาบันทึกการตรวจสอบ",
+      "searchPlaceholder": "กรองผู้ดำเนินการ การกระทำ หรือเหตุผล...",
+      "category": "กรองตามประเภทเหตุการณ์",
+      "cat": {
+        "all": "ทุกประเภทเหตุการณ์",
+        "privileged": "การแก้ไขสิทธิ์สูง (§6.7)",
+        "security": "ความปลอดภัยและการยืนยันตัวตน",
+        "tier": "การย้ายระดับฐานข้อมูล",
+        "quota": "เกณฑ์โควตา API"
+      },
+      "loading": "กำลังโหลดบันทึกการตรวจสอบ",
+      "empty": "ไม่พบรายการที่ตรงกัน",
+      "page": "หน้า",
+      "rows": "แถว",
+      "col": {
+        "time": "เวลา",
+        "severity": "ระดับ",
+        "actor": "ผู้ดำเนินการ",
+        "tenant": "ผู้เช่า",
+        "target": "การกระทำและเป้าหมาย",
+        "metadata": "ข้อมูลประกอบ",
+        "hash": "Hash"
+      },
+      "integrity": "INTEGRITY:",
+      "trigger": "Trigger",
+      "verify": "Verify"
+    },
+    "audit": {
+      "crumb1": "ADMIN_CONSOLE",
+      "crumb2": "GOVERNANCE & SECURITY",
+      "crumb3": "GLOBAL_AUDIT_LOG",
+      "daemon": "AUDIT_DAEMON:",
+      "enclave": "ENCLAVE:",
+      "title": "บันทึกการตรวจสอบรวม",
+      "export": "ส่งออก CSV/JSON",
+      "exportAs": {
+        "csv": "ส่งออกเป็น CSV",
+        "json": "ส่งออกเป็น JSON"
+      },
+      "cards": "สรุปบันทึกการตรวจสอบ",
+      "card": {
+        "total": "เหตุการณ์ที่บันทึกทั้งหมด",
+        "today": "วันนี้",
+        "justifications": "เหตุผลของผู้ดำเนินการ",
+        "missing": "ไม่มีเหตุผล",
+        "enforced": "บังคับระบุเหตุผลตาม §6.7",
+        "privileged": "การแก้ไขสิทธิ์สูง",
+        "events": "เหตุการณ์",
+        "window": "(ช่วง 7 วัน)",
+        "privilegedScope": "DB fleet / ปิดใช้งานผู้เช่า / เปลี่ยนระดับแพ็กเกจ",
+        "seal": "ตราความถูกต้องของข้อมูล"
+      },
+      "search": "ค้นหาบันทึกการตรวจสอบ",
+      "searchPlaceholder": "ค้นหาด้วยอีเมลผู้ดำเนินการ คำสั่ง หรือ Justification...",
+      "tier": "กรองตามระดับเหตุการณ์",
+      "tiers": {
+        "all": "ทุกระดับเหตุการณ์ (ทุกขอบเขต)",
+        "critical": "CRITICAL (อันตรายต่อระบบ / ความปลอดภัย)",
+        "high": "HIGH (การแก้ไขสิทธิ์)",
+        "standard": "STANDARD (เวิร์กโฟลว์)",
+        "system": "SYSTEM (Telemetry / Sync)"
+      },
+      "category": "กรองตามหมวดการกระทำ",
+      "categories": {
+        "all": "ทุกหมวดการกระทำ",
+        "deactivate": "ปิดใช้งานผู้เช่า",
+        "provision": "จัดสรร Dedicated DB",
+        "tier": "อัปเกรด / ดาวน์เกรดระดับ Enterprise",
+        "gateway": "ตั้งค่า Gateway และ e-GP",
+        "gate": "ขั้นอนุมัติการย้าย Schema"
+      },
+      "range": "ช่วงวันที่ (UTC)",
+      "rangeFrom": "ตั้งแต่ (UTC)",
+      "rangeTo": "ถึง (UTC รวมวันนั้น)",
+      "reset": "ล้างตัวกรอง",
+      "ledger": "บันทึกตามลำดับเวลาที่แก้ไขไม่ได้",
+      "sort": "เรียง: เวลาล่าสุดก่อน",
+      "encrypted": "เข้ารหัสขณะจัดเก็บ",
+      "col": {
+        "time": "เวลา",
+        "operator": "ผู้ดำเนินการ (อีเมลและชื่อ)",
+        "tenant": "ผู้เช่าเป้าหมาย",
+        "action": "การกระทำและประเภทเหตุการณ์",
+        "justification": "เหตุผลกำกับของผู้ดำเนินการ (§6.7)",
+        "actions": "การดำเนินการ",
+        "hash": "ตราความถูกต้อง / Hash"
+      },
+      "details": "ดูรายละเอียด",
+      "detail": {
+        "resource": "ทรัพยากร",
+        "ip": "IP",
+        "agent": "User agent",
+        "metadata": "ข้อมูลประกอบ"
+      },
+      "showing": "แสดง",
+      "of": "จาก",
+      "entries": "รายการ",
+      "page": "หน้า",
+      "prev": "ก่อนหน้า",
+      "verify": "ตรวจสอบความถูกต้องของบันทึก",
+      "rootChain": "ROOT_CHAIN:",
+      "hashRoot": "Hash Root ของบันทึก:"
+    },
+    "settings": {
+      "loading": "กำลังโหลดการตั้งค่าระบบ",
+      "reset": "คืนค่าดีฟอลต์",
+      "save": "บันทึกการเปลี่ยนแปลง",
+      "reload": "โหลดค่าที่บันทึกไว้ใหม่",
+      "saved": "บันทึกการตั้งค่าแล้ว",
+      "notSet": "ยังไม่ตั้งค่า",
+      "hours": "ชั่วโมง",
+      "justification": {
+        "title": "Mandatory Operator Justification",
+        "required": "Required for commit",
+        "body": "ตามข้อกำหนดความมั่นคงปลอดภัย ทุกการปรับเปลี่ยนคอนฟิกระดับ Global แพลตฟอร์มจำเป็นต้องระบุเหตุผลประกอบและรหัสอ้างอิงงานเพื่อจัดเก็บใน Global Audit Log",
+        "placeholder": "ระบุเหตุผลในการแก้ไขค่าระบบส่วนกลาง (Mandatory Justification String)...",
+        "valid": "Valid",
+        "rule": "10–500 ตัวอักษร"
+      },
+      "gateways": {
+        "title": "External Data Gateways",
+        "active": "ACTIVE:",
+        "primary": "Primary Endpoint:",
+        "secondary": "Secondary Endpoint:",
+        "namePlaceholder": "ยังไม่ตั้งชื่อ",
+        "protocol": "Protocol:",
+        "maxRetries": "Max Retries:",
+        "primaryUrl": "URL ปลายทางหลัก",
+        "secondaryUrl": "URL ปลายทางสำรอง",
+        "cadence": "Auto-sync Cadence",
+        "ttl": "Failover Cache TTL",
+        "cadences": {
+          "daily": "Daily at 04:00 GMT+7 (รอบเช้ามืด)",
+          "twice": "Twice Daily (04:00, 16:00)",
+          "hourly": "Hourly Polling (High Frequency)"
+        },
+        "fallback": "Auto-Fallback In-Memory Cache on Timeout",
+        "fallbackBody": "ป้องกันระบบคำนวณ BOQ โครงการหยุดชะงักหากเซิร์ฟปลายทางขัดข้อง"
+      },
+      "maintenance": {
+        "title": "Planned Maintenance Windows",
+        "tiered": "TIERED POLICY",
+        "safety": "Safety Non-Suspension Mandate",
+        "safetyBody": "แม้ระบบจะเข้าสู่ Maintenance Window การแจ้งเตือนเหตุฉุกเฉินระดับวิกฤต จะไม่ถูกระงับ",
+        "shared": "Starter & Professional Tenants",
+        "windowPlaceholder": "ยังไม่ตั้งช่วงเวลา เช่น วันอาทิตย์ 01:00 - 04:00 (GMT+7)",
+        "enterprise": "Enterprise Contracted Dedicated Fleets",
+        "enterpriseBody": "กำหนดตาม SLA ข้อตกลงสัญญารายองค์กร",
+        "mode": "โหมดบำรุงรักษา Enterprise",
+        "zeroDowntime": "Zero-Downtime"
+      },
+      "broadcast": {
+        "title": "Advance Broadcast Notice",
+        "lead": "ระยะแจ้งล่วงหน้า (ชั่วโมง)",
+        "hoursPrior": "ชั่วโมงล่วงหน้า",
+        "channels": "ช่องทางแจ้งเตือน",
+        "channel": {
+          "IN_APP_BANNER": "In-app Banner",
+          "EMAIL_DIGEST": "Email Digest"
+        }
+      },
+      "limits": {
+        "title": "Global Multi-tenant Cluster & Database Fleet Limits",
+        "cluster": "CLUSTER:",
+        "shared": "Active Shared Tenants",
+        "cap": "cap",
+        "capLabel": "เพดานผู้เช่าแบบแชร์",
+        "dedicated": "Dedicated Fleet Nodes",
+        "instances": "instances",
+        "pool": "Default Max Pool Conns",
+        "perTenant": "per tenant",
+        "audit": "Security Audit State"
+      },
+      "tiers": {
+        "tier": "Tier",
+        "strategy": "Tenant DB Strategy",
+        "storage": "Storage Quota",
+        "api": "API Mon. Quota",
+        "tokens": "Token Limit / Month",
+        "actions": "Actions",
+        "edit": "แก้ไข",
+        "done": "เสร็จ",
+        "reqPerMonth": "req/mo",
+        "tokenUnit": "Tokens"
+      },
+      "error": {
+        "versionConflict": "มีผู้บันทึกการตั้งค่าหลังจากที่คุณเปิดหน้านี้ จึงยังไม่ได้บันทึก โหลดใหม่เพื่อดูฉบับล่าสุด — การแก้ไขที่ยังไม่บันทึกจะถูกแทนที่",
+        "counts": "มีตัวเลขที่ไม่ใช่จำนวนเต็มหรือเกินขอบเขต แก้ช่องที่ไฮไลต์แล้วบันทึกอีกครั้ง"
+      },
+      "lastCommit": "LAST COMMIT:"
+    },
+    "centralPrices": {
+      "title": "Central Price Register",
+      "template": "ดาวน์โหลด CSV",
+      "import": "Import Central Prices",
+      "register": "ตารางทะเบียนราคากลางมาตรฐาน",
+      "showing": "แสดงผล",
+      "of": "จาก",
+      "items": "รายการ",
+      "period": "งวดที่มีผล",
+      "allPeriods": "ทุกงวด",
+      "loading": "กำลังโหลดราคากลาง",
+      "empty": "ยังไม่มีราคากลาง นำเข้าไฟล์เพื่อเริ่มทะเบียน",
+      "col": {
+        "code": "รหัสวัสดุ",
+        "description": "รายการวัสดุและคุณลักษณะ",
+        "category": "หมวดหมู่งาน",
+        "unit": "หน่วย",
+        "price": "ราคา",
+        "source": "แหล่งข้อมูลอ้างอิง",
+        "status": "สถานะ"
+      },
+      "source": {
+        "MANUAL_IMPORT": "นำเข้าจากไฟล์",
+        "GOV_API": "API ภาครัฐ"
+      },
+      "status": {
+        "ACTIVE": "Active",
+        "PENDING": "Pending",
+        "INACTIVE": "Inactive"
+      },
+      "sync": {
+        "title": "API-Sync Status Panel",
+        "adapter": "Adapter:",
+        "configured": "ตั้งค่าแล้ว",
+        "notConfigured": "ยังไม่ได้ตั้งค่า",
+        "loading": "กำลังโหลดสถานะการซิงค์",
+        "lastRun": "เวลาซิงค์ล่าสุด",
+        "never": "ยังไม่เคยนำเข้าหรือซิงค์",
+        "outcome": "Sync Outcome (สถานะผลลัพธ์)",
+        "brought": "What it brought in (ข้อมูลที่นำเข้า)",
+        "records": "records",
+        "inserted": "นำเข้าใหม่",
+        "updated": "อัปเดตราคา",
+        "rejected": "ปฏิเสธ",
+        "kind": {
+          "FILE_IMPORT": "นำเข้าจากไฟล์",
+          "GOV_API": "ซิงค์ API ภาครัฐ"
+        },
+        "outcomes": {
+          "SUCCEEDED": "Succeeded",
+          "FAILED": "Failed",
+          "NOT_CONFIGURED": "Not configured"
+        },
+        "outcomeDrawn": "HTTP 200 OK · Payload Signature Verified"
+      },
+      "failed": {
+        "title": "Failed-Sync State",
+        "code": "Error code:",
+        "none": "ยังไม่มีการนำเข้าหรือซิงค์ที่ล้มเหลว",
+        "at": "เวลาที่เกิดข้อผิดพลาด:",
+        "retries": "จำนวนครั้งที่ลองใหม่:",
+        "log": "ดู Log เชิงเทคนิค",
+        "retry": "Force Retry Sync",
+        "impact": "ผลกระทบ:",
+        "fallback": "Fallback:",
+        "retriesDrawn": "พยายามเชื่อมต่อใหม่อัตโนมัติแล้ว 5 ครั้ง (Max Retries Reached)",
+        "impactDrawn": "ผลกระทบ: ระบบใช้ข้อมูลราคากลางฉบับแคชล่าสุด (Cached Baseline 25/09/2026) อัตโนมัติ เพื่อไม่ให้กระทบการคำนวณ BOQ ของโครงการ",
+        "fallbackDrawn": "In-Memory Cache Active"
+      },
+      "importForm": {
+        "file": "ไฟล์ราคา",
+        "fileHelp": "ไฟล์ CSV (UTF-8) หรือ .xlsx ตามคอลัมน์ในเทมเพลต ขนาดไม่เกิน 5 MB",
+        "fileRequired": "เลือกไฟล์ที่จะนำเข้า",
+        "period": "งวดที่มีผล",
+        "periodRule": "1–32 ตัวอักษร ตัวเลข \".\", \"_\", \"/\" หรือ \"-\" ขึ้นต้นด้วยตัวอักษรหรือตัวเลข เช่น 2569 หรือ 2569-01",
+        "sourceRef": "เอกสารอ้างอิง (ไม่บังคับ)",
+        "submit": "นำเข้า",
+        "done": "เสร็จ",
+        "row": "แถว"
+      },
+      "syncForm": {
+        "body": "สั่งให้ adapter ราคากลางภาครัฐทำงานหนึ่งครั้ง adapter ของ e-GP ยังไม่ได้ตั้งค่า การทำงานจึงถูกบันทึกว่า \"ยังไม่ได้ตั้งค่า\"",
+        "submit": "เริ่มซิงค์"
+      },
+      "error": {
+        "invalidUpload": "ข้อมูลที่อัปโหลดไม่ใช่ฟอร์มที่ใช้ได้ เลือกไฟล์เดียวแล้วลองใหม่",
+        "unsupportedFileType": "นำเข้าได้เฉพาะไฟล์ CSV หรือ .xlsx",
+        "fileTooLarge": "ไฟล์มีขนาดเกิน 5 MB",
+        "importFailed": "นำเข้าไฟล์ไม่ได้ ไม่มีข้อมูลถูกบันทึก — ตรวจคอลัมน์เทียบกับเทมเพลต"
+      }
+    },
+    "comingSoon": {
+      "title": "เร็ว ๆ นี้",
+      "body": "ยังไม่พร้อมใช้งาน",
+      "close": "ปิด"
+    }
+  },
+  "auth": {
+    "login": {
+      "title": "เข้าสู่ระบบ",
+      "office": "สำหรับสำนักงาน / ผู้บริหาร",
+      "officeButton": "เข้าสู่ระบบด้วย Keycloak",
+      "emailButton": "เข้าสู่ระบบด้วยอีเมล",
+      "fieldLink": "เข้าสู่ระบบสำหรับหน้างาน (SMS OTP)",
+      "fieldAccess": "สำหรับผู้ปฏิบัติงานหน้างาน",
+      "error": "เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่",
+      "headline": "ชั้นข้อมูลอัจฉริยะสำหรับงานโครงสร้างพื้นฐานยุคใหม่",
+      "subtitle": "เทเลเมทรีแบบเรียลไทม์ ติดตามสินทรัพย์อย่างปลอดภัย และงานภาคสนามที่ขับเคลื่อนด้วย AI สำหรับโครงการระดับองค์กร",
+      "badgeEnterprise": "ระดับองค์กร",
+      "badgeNetwork": "เครือข่ายทั่วโลก",
+      "cardTitle": "เข้าถึงอย่างปลอดภัย",
+      "cardSubtitle": "เลือกวิธีเข้าสู่ศูนย์ควบคุมการทำงาน",
+      "credentialsSubtitle": "กรอกข้อมูลเข้าสู่ระบบเพื่อเข้าถึงศูนย์ควบคุมการทำงาน",
+      "sendPasscode": "ส่งรหัสผ่านนิรภัย",
+      "cloudSyncActive": "ซิงค์คลาวด์ทำงานอยู่",
+      "support": "ฝ่ายสนับสนุน",
+      "systemStatus": "สถานะระบบ",
+      "helpCenter": "ศูนย์ช่วยเหลือ",
+      "termsOfService": "เงื่อนไขการให้บริการ",
+      "privacyPolicy": "นโยบายความเป็นส่วนตัว",
+      "securityPolicy": "นโยบายความปลอดภัย",
+      "terms": "เงื่อนไข",
+      "footerUnit": "หน่วยข่าวกรองอุตสาหกรรม / ปฏิบัติการทั่วโลก",
+      "globalRegion": "GLOBAL: SFO-7",
+      "or": "หรือ",
+      "statusOperational": "ระบบทั้งหมดทำงานปกติ",
+      "copyright": "© 2026 Construction OS Enterprise"
+    },
+    "otp": {
+      "title": "เข้าสู่ระบบด้วย SMS OTP",
+      "phoneTitle": "สำหรับผู้ปฏิบัติงานหน้างาน",
+      "phoneSubtitle": "กรอกเบอร์โทรศัพท์เพื่อรับรหัสผ่านครั้งเดียว",
+      "phoneLabel": "เบอร์โทรศัพท์",
+      "phonePlaceholder": "เช่น 0812345678",
+      "requestButton": "ขอรหัส OTP",
+      "otpLabel": "รหัส OTP (6 หลัก)",
+      "verifyTitle": "ยืนยันตัวตนของคุณ",
+      "verifySubtitle": "กรอกรหัส 6 หลักที่ส่งไปยังเบอร์ที่ลงท้ายด้วย",
+      "verifyButton": "ยืนยันและดำเนินการต่อ",
+      "resendCode": "ส่งรหัสอีกครั้ง",
+      "expiresIn": "รหัสหมดอายุใน",
+      "aesActive": "AES-256 ทำงาน",
+      "securityNote": "เซสชันของคุณถูกตรวจสอบเพื่อความปลอดภัย อย่าเปิดเผยรหัสแก่ผู้ใด รวมถึงเจ้าหน้าที่ Construction OS",
+      "backToOffice": "กลับไปเข้าสู่ระบบสำนักงาน",
+      "sent": "ส่งรหัส OTP ไปยังเบอร์ของคุณแล้ว",
+      "requestError": "ขอรหัส OTP ไม่สำเร็จ",
+      "verifyError": "รหัส OTP ไม่ถูกต้องหรือหมดอายุ",
+      "countryLabel": "ประเทศ"
+    },
+    "logout": {
+      "title": "กำลังออกจากระบบ..."
+    },
+    "loading": {
+      "title": "กำลังยืนยันรหัสความปลอดภัย",
+      "status": "กำลังรักษาความปลอดภัยเซสชัน",
+      "inProgress": "ระบบกำลังยืนยันตัวตน",
+      "encryption": "การเข้ารหัส",
+      "nodeId": "Node ID",
+      "rootCert": "ROOT_CERT: VALIDATED",
+      "helpCenter": "ศูนย์ช่วยเหลือ"
+    },
+    "pending": {
+      "title": "โมดูลยังไม่พร้อมใช้งาน",
+      "body": "หน้าใช้งานสำหรับบทบาทของคุณกำลังอยู่ระหว่างพัฒนา (รอ backend)"
+    }
+  },
+  "common": {
+    "appName": "Construction OS",
+    "featureFlag": {
+      "disabled": "ฟีเจอร์นี้ถูกปิดใช้งานชั่วคราว"
+    },
+    "imageFailedToLoad": "โหลดไม่สำเร็จ",
+    "loading": "กำลังโหลด...",
+    "offline": "ออฟไลน์",
+    "readOnly": "โหมดอ่านอย่างเดียว — บัญชีนี้ดูข้อมูลได้แต่ไม่สามารถแก้ไขได้",
+    "retry": "ลองใหม่",
+    "signOut": "ออกจากระบบ",
+    "synced": "ซิงค์แล้ว",
+    "syncing": "กำลังซิงค์..."
+  },
+  "crm": {
+    "leadsTitle": "ลูกค้าเป้าหมาย (Leads)",
+    "opportunitiesTitle": "โอกาสการขาย",
+    "customersTitle": "ลูกค้า",
+    "colContact": "ผู้ติดต่อ",
+    "colCompany": "บริษัท",
+    "colSource": "แหล่งที่มา",
+    "colTitle": "หัวข้อ",
+    "colValue": "มูลค่า",
+    "colCloseDate": "คาดว่าจะปิด",
+    "createLead": "เพิ่ม Lead",
+    "createOpportunity": "สร้างโอกาส",
+    "convert": "แปลงเป็นลูกค้า",
+    "selectLead": "เลือก Lead"
+  },
+  "exec": {
+    "homeTitle": "ภาพรวมพอร์ตโครงการ",
+    "kpiActiveProjects": "โครงการที่ดำเนินการ",
+    "kpiBudget": "งบประมาณรวม",
+    "kpiActual": "ใช้จริงรวม",
+    "kpiOpenCritical": "ปัญหาวิกฤตที่เปิดอยู่",
+    "portfolioTitle": "พอร์ตโครงการ",
+    "alertsTitle": "การแจ้งเตือนความเสี่ยง",
+    "alertsBudget": "งบประมาณเกินเกณฑ์",
+    "alertsCritical": "ปัญหาวิกฤต",
+    "noAlerts": "ไม่มีการแจ้งเตือนความเสี่ยง",
+    "reportsTitle": "รายงานผู้บริหาร (AI)",
+    "selectProject": "เลือกโครงการ",
+    "generate": "สร้างรายงาน",
+    "generating": "กำลังสร้างรายงาน...",
+    "reportUnavailable": "ยังสร้างรายงาน AI ไม่ได้ (ยังไม่ได้ตั้งค่า LLM provider)",
+    "lowConfidence": "ความเชื่อมั่นต่ำ — ข้อมูลไม่เพียงพอ",
+    "atRisk": "เสี่ยง",
+    "onTrack": "ปกติ"
+  },
+  "finance": {
+    "paymentsTitle": "การชำระเงิน (AP)",
+    "budgetTitle": "งบประมาณ",
+    "invoicesTitle": "ใบแจ้งหนี้ผู้ขาย",
+    "varianceTitle": "รายงานส่วนต่างงบ",
+    "allStatuses": "ทุกสถานะ",
+    "approve": "อนุมัติ",
+    "overBudget": "เกินงบ",
+    "onBudget": "ในงบ",
+    "selectProject": "เลือกโครงการ",
+    "invoicesHint": "ใบแจ้งหนี้เป็นของโมดูลจัดซื้อ (AP) — Finance ดู/อนุมัติ/จ่าย",
+    "colNumber": "เลขที่",
+    "colVendor": "ผู้ขาย",
+    "colPo": "PO",
+    "colDueDate": "ครบกำหนด",
+    "colReference": "อ้างอิง",
+    "dispute": "โต้แย้ง",
+    "recordPayment": "บันทึกการจ่ายเงิน",
+    "amount": "จำนวนเงิน",
+    "paymentDate": "วันที่จ่าย",
+    "selectInvoice": "เลือกใบแจ้งหนี้",
+    "paymentReference": "เลขอ้างอิง (ไม่บังคับ)"
+  },
+  "location": {
+    "getLocation": "ระบุตำแหน่ง",
+    "locating": "กำลังระบุตำแหน่ง…",
+    "currentLocation": "ตำแหน่งปัจจุบัน",
+    "coordinates": "พิกัด",
+    "accuracy": "ความแม่นยำ",
+    "notSupported": "เบราว์เซอร์นี้ไม่รองรับบริการระบุตำแหน่ง",
+    "denied": "ไม่ได้รับอนุญาตให้เข้าถึงตำแหน่ง",
+    "timeout": "หมดเวลาการระบุตำแหน่ง",
+    "unavailable": "ไม่สามารถระบุตำแหน่งได้"
+  },
+  "nav": {
+    "exec": {
+      "home": "ภาพรวมพอร์ต",
+      "portfolio": "พอร์ตโครงการ",
+      "alerts": "การแจ้งเตือนความเสี่ยง",
+      "reports": "รายงานผู้บริหาร"
+    },
+    "pm": {
+      "projects": "โครงการ"
+    },
+    "procurement": {
+      "requests": "ใบขอซื้อ",
+      "rfqs": "ใบขอราคา (RFQ)",
+      "quotations": "เปรียบเทียบใบเสนอราคา",
+      "orders": "ใบสั่งซื้อ (PO)",
+      "deliveries": "การส่งมอบ",
+      "vendors": "ผู้ขาย"
+    },
+    "finance": {
+      "payments": "การชำระเงิน",
+      "budget": "งบประมาณ",
+      "invoices": "ใบแจ้งหนี้",
+      "variance": "รายงานส่วนต่างงบ"
+    },
+    "site": {
+      "reports": "รายงานหน้างาน",
+      "issues": "ปัญหา",
+      "inspections": "การตรวจสอบ",
+      "conflicts": "แก้ไขข้อขัดแย้ง"
+    },
+    "siteWorker": {
+      "newReport": "รายงานประจำวัน",
+      "newIssue": "แจ้งปัญหา",
+      "tasks": "งาน",
+      "checklists": "เช็คลิสต์"
+    },
+    "admin": {
+      "users": "จัดการผู้ใช้",
+      "tenant": "ตั้งค่าองค์กร",
+      "subjectRequests": "คำขอจากเจ้าของข้อมูล"
+    },
+    "safety": {
+      "incidents": "เหตุการณ์",
+      "permits": "ใบอนุญาต",
+      "checklists": "เช็คลิสต์",
+      "compliance": "การปฏิบัติตาม"
+    },
+    "crm": {
+      "leads": "Leads",
+      "opportunities": "โอกาสการขาย",
+      "customers": "ลูกค้า"
+    }
+  },
+  "pm": {
+    "projectsTitle": "โครงการ",
+    "newProject": "สร้างโครงการ",
+    "create": "สร้าง",
+    "cancel": "ยกเลิก",
+    "filterAll": "ทั้งหมด",
+    "fieldCode": "รหัสโครงการ",
+    "fieldName": "ชื่อโครงการ",
+    "fieldType": "ประเภท",
+    "fieldBudget": "งบประมาณ",
+    "fieldCurrency": "สกุลเงิน",
+    "members": "สมาชิก",
+    "documents": "เอกสาร",
+    "boqSummary": "สรุป BOQ",
+    "detailOverview": "ภาพรวม",
+    "transition": "เปลี่ยนสถานะ",
+    "reason": "เหตุผล",
+    "apply": "ยืนยัน",
+    "tabProcurement": "จัดซื้อ",
+    "tabFinance": "การเงิน",
+    "tabSite": "หน้างาน",
+    "tabRisks": "ความเสี่ยง",
+    "tabDashboard": "แดชบอร์ด",
+    "tabGraph": "กราฟความรู้",
+    "graphTitle": "กราฟความรู้โครงการ",
+    "graphSubtitle": "ผู้ขาย ห่วงโซ่อุปทานวัสดุ และการตรวจสอบ ที่เชื่อมโยงกับโครงการนี้ (จากฐานข้อมูลกราฟ Neo4j)",
+    "graphVendors": "ผู้ขายที่ส่งของให้โครงการ",
+    "graphSupplyChain": "ห่วงโซ่อุปทานวัสดุ",
+    "graphInspections": "การตรวจสอบ",
+    "graphVendorDetail": "รายละเอียดผู้ขาย",
+    "graphOtherProjects": "โครงการอื่นที่ใช้ผู้ขายรายนี้ร่วมกัน",
+    "graphInvoices": "ใบแจ้งหนี้ของผู้ขาย",
+    "graphViewVendor": "ดูความสัมพันธ์",
+    "graphSelectVendor": "เลือกผู้ขายเพื่อดูโครงการที่ใช้ร่วมกันและใบแจ้งหนี้",
+    "graphEmpty": "ยังไม่มีข้อมูลในกราฟสำหรับโครงการนี้",
+    "colVendor": "ผู้ขาย",
+    "colMaterial": "วัสดุ",
+    "colProject": "โครงการ",
+    "colInvoice": "เลขที่ใบแจ้งหนี้",
+    "colCurrency": "สกุลเงิน",
+    "procurementTitle": "สถานะจัดซื้อ",
+    "financeTitle": "งบประมาณ vs ใช้จริง",
+    "siteTitle": "สรุปหน้างาน",
+    "prs": "ใบขอซื้อ",
+    "rfqs": "ใบขอราคา",
+    "pos": "ใบสั่งซื้อ",
+    "allocated": "จัดสรร",
+    "committed": "ผูกพัน",
+    "actual": "ใช้จริง",
+    "variance": "ส่วนต่าง (%)",
+    "noBudget": "ยังไม่มีงบประมาณ",
+    "openIssues": "ปัญหาที่เปิดอยู่",
+    "colNumber": "เลขที่",
+    "colAmount": "จำนวนเงิน",
+    "colDate": "วันที่",
+    "colRole": "บทบาท",
+    "colDeadline": "กำหนด",
+    "colManpower": "แรงงาน",
+    "colVersion": "เวอร์ชัน"
+  },
+  "proc": {
+    "requestsTitle": "ใบขอซื้อ",
+    "rfqsTitle": "ใบขอราคา (RFQ)",
+    "ordersTitle": "ใบสั่งซื้อ (PO)",
+    "deliveriesTitle": "การส่งมอบ",
+    "vendorsTitle": "ผู้ขาย",
+    "quotationsTitle": "เปรียบเทียบใบเสนอราคา",
+    "allStatuses": "ทุกสถานะ",
+    "selectRfq": "เลือก RFQ (สถานะ CLOSED)",
+    "award": "เลือกผู้ชนะ",
+    "awarded": "เลือกแล้ว",
+    "selected": "ถูกเลือก",
+    "active": "ใช้งาน",
+    "inactive": "ปิดใช้งาน",
+    "colVendor": "ผู้ขาย",
+    "colCode": "รหัส",
+    "colName": "ชื่อ",
+    "colContact": "ติดต่อ",
+    "colValidity": "ยืนราคา (วัน)",
+    "colDeliveryNote": "ใบส่งของ",
+    "colPo": "PO",
+    "quotationsHint": "ดูได้เฉพาะ RFQ ที่สถานะ CLOSED; เลือกผู้ชนะได้เมื่อสถานะ EVALUATED",
+    "recordDelivery": "บันทึกการรับของ",
+    "recordDeliveryTitle": "บันทึกการรับของ",
+    "backToDeliveries": "กลับไปรายการรับของ",
+    "deliveryRecorded": "บันทึกการรับของแล้ว",
+    "selectPo": "เลือกใบสั่งซื้อ",
+    "deliveredAt": "รับเมื่อ",
+    "deliveryNote": "เลขที่ใบส่งของ",
+    "colDescription": "รายการ",
+    "colOrdered": "สั่ง",
+    "colReceived": "รับ",
+    "publish": "เผยแพร่",
+    "close": "ปิด",
+    "cancel": "ยกเลิก",
+    "submit": "ส่งอนุมัติ",
+    "approve": "อนุมัติ",
+    "reject": "ปฏิเสธ",
+    "rejectReason": "เหตุผลการปฏิเสธ",
+    "prNumber": "เลขที่ PR",
+    "requiredDate": "วันที่ต้องการ",
+    "createRequest": "สร้าง PR",
+    "rfqNumber": "เลขที่ RFQ",
+    "createRfq": "สร้าง RFQ",
+    "deadline": "กำหนดส่ง",
+    "colScore": "คะแนนผู้ขาย"
+  },
+  "profile": {
+    "title": "โปรไฟล์ของฉัน",
+    "link": "โปรไฟล์",
+    "name": "ชื่อ",
+    "email": "อีเมล",
+    "role": "บทบาท",
+    "tenant": "องค์กร",
+    "language": "ภาษา"
+  },
+  "projectStatus": {
+    "DRAFT": "ร่าง",
+    "ACTIVE": "ดำเนินการ",
+    "ON_HOLD": "พักไว้",
+    "COMPLETED": "เสร็จสิ้น",
+    "CANCELLED": "ยกเลิก"
+  },
+  "projectType": {
+    "RESIDENTIAL": "ที่อยู่อาศัย",
+    "COMMERCIAL": "พาณิชย์",
+    "INFRASTRUCTURE": "โครงสร้างพื้นฐาน",
+    "INDUSTRIAL": "อุตสาหกรรม"
+  },
+  "risk": {
+    "aiSuggested": "AI",
+    "cancel": "ยกเลิก",
+    "colActions": "",
+    "colCategory": "หมวด",
+    "colScore": "โอกาส × ผลกระทบ",
+    "colStatus": "สถานะ",
+    "colTitle": "ความเสี่ยง",
+    "edit": "แก้ไข",
+    "fieldDescription": "รายละเอียด",
+    "fieldMitigation": "แนวทางลดความเสี่ยง",
+    "fieldOwner": "ผู้รับผิดชอบ",
+    "fieldTitle": "หัวข้อความเสี่ยง",
+    "filterAllCategory": "ทุกหมวด",
+    "filterAllStatus": "ทุกสถานะ",
+    "heatMap": "แผนภาพความเสี่ยง (โอกาส × ผลกระทบ)",
+    "impact": "ผลกระทบ",
+    "likelihood": "โอกาสเกิด",
+    "raise": "เพิ่มความเสี่ยง",
+    "save": "บันทึก",
+    "title": "ทะเบียนความเสี่ยง"
+  },
+  "riskCategory": {
+    "SAFETY": "ความปลอดภัย",
+    "FINANCIAL": "การเงิน",
+    "SCHEDULE": "กำหนดการ",
+    "TECHNICAL": "เทคนิค",
+    "EXTERNAL": "ปัจจัยภายนอก",
+    "OTHER": "อื่นๆ"
+  },
+  "riskStatus": {
+    "OPEN": "เปิด",
+    "MITIGATING": "กำลังลดความเสี่ยง",
+    "CLOSED": "ปิด",
+    "ACCEPTED": "ยอมรับความเสี่ยง"
+  },
+  "safety": {
+    "incidentsTitle": "อุบัติเหตุ/เหตุการณ์ความปลอดภัย",
+    "permitsTitle": "ใบอนุญาตทำงาน",
+    "checklistsTitle": "เช็คลิสต์ความปลอดภัย",
+    "complianceTitle": "สถานะการปฏิบัติตามข้อกำหนด",
+    "colType": "ประเภทเหตุการณ์",
+    "colPermitNo": "เลขที่ใบอนุญาต",
+    "colPermitType": "ประเภทใบอนุญาต",
+    "colValidUntil": "มีผลถึง",
+    "acknowledge": "รับทราบ",
+    "report": "แจ้งเหตุ",
+    "approve": "อนุมัติ",
+    "reject": "ปฏิเสธ",
+    "permitsHint": "§15.5: Site Engineer → Safety Officer → PM (safety permit)",
+    "permitPmRequired": "ใบอนุญาตความปลอดภัยต้องให้ PM อนุมัติขั้นสุดท้าย",
+    "openIncidents": "เหตุการณ์ที่เปิดอยู่",
+    "highCritical": "รุนแรง/วิกฤต (เปิด)",
+    "expiredPermits": "ใบอนุญาตหมดอายุ",
+    "revokedPermits": "ใบอนุญาตถูกเพิกถอน"
+  },
+  "settings": {
+    "usersTitle": "จัดการผู้ใช้",
+    "tenantTitle": "ตั้งค่าองค์กร",
+    "colName": "ชื่อ",
+    "colEmail": "อีเมล",
+    "colRole": "บทบาท",
+    "active": "ใช้งาน",
+    "inactive": "ปิดใช้งาน",
+    "deactivate": "ปิดใช้งาน",
+    "createUser": "เพิ่มผู้ใช้",
+    "variance": "เกณฑ์แจ้งเตือนงบเกิน (%)",
+    "retention": "เปอร์เซ็นต์เงินประกันผลงาน (%)",
+    "lineToken": "LINE Channel Access Token",
+    "notifications": "เปิดการแจ้งเตือน",
+    "save": "บันทึก",
+    "saved": "บันทึกแล้ว",
+    "srTitle": "คำขอจากเจ้าของข้อมูล",
+    "srIntro": "คำขอจากบุคคลที่ไม่มีบัญชีในระบบนี้ — ผู้ติดต่อ CRM, lead, ผู้ติดต่อของผู้ขาย องค์กรของคุณเป็นผู้ควบคุมข้อมูล Construction OS เก็บข้อมูลนี้ตามคำสั่งของคุณ",
+    "srType": "ประเภท",
+    "srSubject": "เจ้าของข้อมูล",
+    "srStatus": "สถานะ",
+    "srReceived": "รับเรื่องเมื่อ",
+    "srOpen": "เปิดอยู่",
+    "srAccess": "ขอดูข้อมูล",
+    "srErasure": "ขอลบข้อมูล",
+    "srEmail": "อีเมล",
+    "srPhone": "โทรศัพท์",
+    "srReceivedAt": "วันเวลาที่รับเรื่อง",
+    "srNote": "หมายเหตุ",
+    "srCreate": "เปิดคำขอ",
+    "srViewMatches": "ดูข้อมูลที่เก็บไว้",
+    "srMatches": "ข้อมูลที่เก็บไว้",
+    "srNoMatches": "ไม่พบข้อมูลที่ตรงกับตัวระบุในคำขอนี้",
+    "srErase": "ลบข้อมูลส่วนบุคคล",
+    "srLegalHold": "เก็บสำเนาไว้ภายใต้ legal hold",
+    "srLegalHoldReason": "เหตุผลของ legal hold",
+    "srClose": "ปิดคำขอ",
+    "srOutcome": "ดำเนินการอะไรไป หรือปฏิเสธเพราะอะไร",
+    "srFulfilled": "ดำเนินการแล้ว",
+    "srRejected": "ปฏิเสธ",
+    "srErased": "ลบข้อมูลส่วนบุคคลแล้ว {total} รายการ",
+    "srVerify": "ส่งลิงก์ยืนยันตัวตน",
+    "srVerified": "ยืนยันแล้ว",
+    "srUnverified": "ยังไม่ยืนยัน",
+    "srVerifySent": "ส่งลิงก์ยืนยันไปที่ {to} แล้ว",
+    "srVerifyHint": "จะลบข้อมูลไม่ได้จนกว่าเจ้าของข้อมูลจะกดยืนยัน ลิงก์ส่งไปยังที่อยู่บนเรคคอร์ดที่ตรงกัน ไม่ใช่ที่กรอกด้านบน"
+  },
+  "shell": {
+    "notifications": "การแจ้งเตือน",
+    "noNotifications": "ไม่มีการแจ้งเตือน",
+    "markAllRead": "ทำเครื่องหมายว่าอ่านแล้วทั้งหมด",
+    "language": "ภาษา"
+  },
+  "site": {
+    "allStatuses": "ทุกสถานะ",
+    "approve": "อนุมัติ",
+    "checklistsTitle": "เช็คลิสต์ความปลอดภัย",
+    "colChecklist": "เช็คลิสต์",
+    "colChecklistName": "ชื่อเช็คลิสต์",
+    "colConflictType": "ประเภทข้อขัดแย้ง",
+    "colDate": "วันที่",
+    "colEntity": "ประเภทข้อมูล",
+    "colEntityId": "รหัสข้อมูล",
+    "colInspectedAt": "ตรวจเมื่อ",
+    "colManpower": "จำนวนแรงงาน",
+    "colNotes": "หมายเหตุ",
+    "colProgress": "ความคืบหน้า",
+    "colSeverity": "ความรุนแรง",
+    "colSummary": "สรุป",
+    "colTaskName": "ชื่องาน",
+    "colTitle": "หัวข้อ",
+    "colVersion": "เวอร์ชัน",
+    "complete": "เสร็จสิ้น",
+    "completeBlocked": "ปิดงานไม่ได้ — ติดเงื่อนไข (ตรวจสอบ/ปัญหา/งานก่อนหน้า/ใบอนุญาต)",
+    "conflictsTitle": "การแก้ไขข้อขัดแย้ง",
+    "escalate": "ยกระดับ (แจ้ง PM)",
+    "fieldBlockers": "อุปสรรค/สิ่งกีดขวาง (ถ้ามี)",
+    "fieldDate": "วันที่",
+    "fieldDescription": "รายละเอียด",
+    "fieldManpower": "จำนวนแรงงาน",
+    "fieldPhoto": "รูปภาพ",
+    "fieldSeverity": "ระดับความรุนแรง",
+    "fieldSummary": "สรุป/อุปสรรค",
+    "fieldTitle": "หัวข้อ",
+    "inspectionsTitle": "ผลการตรวจสอบ",
+    "issuesNewTitle": "แจ้งปัญหา",
+    "issuesTitle": "ปัญหาหน้างาน",
+    "reportsNewTitle": "ส่งรายงานประจำวัน",
+    "reportsTitle": "รายงานหน้างาน",
+    "requestReinspection": "ขอตรวจซ้ำ",
+    "resolve": "แก้ไข",
+    "selectProject": "เลือกโครงการ",
+    "submit": "ส่ง",
+    "submitted": "ส่งเรียบร้อย",
+    "tasksTitle": "งานที่ได้รับมอบหมาย"
+  },
+  "table": {
+    "project": "โครงการ",
+    "code": "รหัส",
+    "status": "สถานะ",
+    "type": "ประเภท",
+    "budget": "งบประมาณ",
+    "actual": "ใช้จริง",
+    "utilization": "% การใช้งบ",
+    "severity": "ความรุนแรง",
+    "title": "หัวข้อ",
+    "createdAt": "สร้างเมื่อ",
+    "actions": "การดำเนินการ"
+  },
+  "validation": {
+    "invalidOption": "กรุณาเลือกจากตัวเลือกที่มีให้",
+    "notACurrency": "กรุณากรอกรหัสสกุลเงิน 3 ตัวอักษร",
+    "notADate": "กรุณากรอกวันที่ให้ถูกต้อง",
+    "notAPhone": "กรุณากรอกเบอร์โทรให้ถูกต้อง",
+    "notAUuid": "ตัวเลือกไม่ถูกต้อง",
+    "notAnAmount": "กรุณากรอกจำนวนให้ถูกต้อง",
+    "notAnEmail": "กรุณากรอกอีเมลให้ถูกต้อง",
+    "notAnInteger": "กรุณากรอกเป็นจำนวนเต็ม",
+    "notAnOtp": "กรุณากรอกรหัส 6 หลัก",
+    "outOfRange": "ค่าอยู่นอกช่วงที่กำหนด",
+    "required": "กรุณากรอกข้อมูลนี้",
+    "tooLong": "ยาวเกินกำหนด",
+    "tooShort": "สั้นเกินไป",
+    "notATenantCode": "ใช้ a–z ตัวเลข หรือขีดล่าง 2–50 ตัวอักษร",
+    "notAPostgresUrl": "ต้องขึ้นต้นด้วย postgresql://"
+  },
+  "vendor": {
+    "portalTitle": "พอร์ทัลผู้ขาย",
+    "rfqUnavailable": "ลิงก์ RFQ นี้ไม่ถูกต้องหรือหมดอายุ",
+    "quotationSent": "ส่งใบเสนอราคาแล้ว",
+    "goToDashboard": "ไปที่แดชบอร์ด",
+    "rfqTitle": "คำขอใบเสนอราคา",
+    "rfqNumber": "เลขที่ RFQ",
+    "deadline": "กำหนดส่ง",
+    "submitQuotation": "ส่งใบเสนอราคา",
+    "totalAmount": "ยอดรวม",
+    "currency": "สกุลเงิน",
+    "validityDays": "ยืนราคา (วัน)",
+    "submitFailed": "ส่งไม่สำเร็จ กรุณาตรวจสอบข้อมูล",
+    "dashboardTitle": "แดชบอร์ดผู้ขาย",
+    "purchaseOrders": "ใบสั่งซื้อ",
+    "invoices": "ใบแจ้งหนี้",
+    "noSession": "ตอบ RFQ ก่อนเพื่อเข้าถึงใบสั่งซื้อและใบแจ้งหนี้",
+    "colPoNumber": "เลขที่ใบสั่งซื้อ",
+    "deliveryDate": "วันที่ส่งมอบ",
+    "noPurchaseOrders": "ยังไม่มีใบสั่งซื้อ",
+    "colInvoiceNumber": "เลขที่ใบแจ้งหนี้",
+    "invoiceDate": "วันที่ใบแจ้งหนี้",
+    "poId": "รหัสใบสั่งซื้อ",
+    "dueDate": "วันครบกำหนด",
+    "submitInvoice": "ส่งใบแจ้งหนี้",
+    "noInvoices": "ยังไม่มีใบแจ้งหนี้",
+    "quotations": "ใบเสนอราคา",
+    "submittedAt": "ส่งเมื่อ",
+    "noQuotations": "ยังไม่มีใบเสนอราคา",
+    "invitedRfqs": "ใบขอราคาที่ได้รับเชิญ",
+    "noInvitedRfqs": "ยังไม่มีใบขอราคาที่ได้รับเชิญ"
+  },
+  "voice": {
+    "tapToSpeak": "แตะเพื่อพูด",
+    "stop": "หยุด",
+    "recording": "กำลังบันทึกเสียง…",
+    "transcribing": "กำลังถอดเสียง…",
+    "placeholder": "ข้อความถอดเสียงจะปรากฏที่นี่",
+    "notSupported": "เบราว์เซอร์นี้ไม่รองรับการป้อนด้วยเสียง",
+    "micDenied": "ไม่ได้รับอนุญาตให้ใช้ไมโครโฟน",
+    "error": "ถอดเสียงไม่สำเร็จ",
+    "unavailable": "บริการถอดเสียงยังไม่พร้อมใช้งาน",
+    "language": "ภาษา"
+  },
+  "trust": {
+    "brand": "CONSTRUCTION OS",
+    "title": "ศูนย์ความเชื่อมั่น",
+    "intro": "สิ่งที่ปกป้องข้อมูลของคุณ ระบุไว้ในแบบที่คุณตรวจสอบได้ ทุกมาตรการด้านล่างอ้างอิงใบรับรอง ข้อเท็จจริงสาธารณะ หรือทะเบียนมาตรการในระบบของเรา และสิ่งที่เรายังไม่ได้ทำก็ระบุไว้ตรง ๆ แทนที่จะตัดออก",
+    "verifiedOn": "ตรวจสอบมาตรการกับระบบจริงเมื่อ",
+    "status": {
+      "live": "ใช้งานจริง",
+      "partial": "บางส่วน",
+      "planned": "ยังไม่ได้ทำ"
+    },
+    "controls": {
+      "heading": "มาตรการด้านความปลอดภัย",
+      "note": "“ยังไม่ได้ทำ” หมายถึงกำหนดไว้ในข้อกำหนดและมีแผนแล้ว แต่ยังไม่ได้ใช้งานจริงบนระบบ",
+      "keys": {
+        "label": "การปกป้องกุญแจเข้ารหัส",
+        "detail": "กุญแจเข้ารหัสข้อมูลถูกสร้างและใช้งานภายใน hardware security module ของ AWS Key Management Service ซึ่งผ่านการรับรองจาก NIST ใบรับรองอยู่ที่ลิงก์ด้านล่าง และมีผลถึง 17 พฤศจิกายน 2026 ซึ่งต้องตรวจสอบใหม่เมื่อถึงกำหนด"
+      },
+      "atRest": {
+        "label": "การเข้ารหัสขณะจัดเก็บ",
+        "detail": "ครอบคลุมฐานข้อมูล พื้นที่จัดเก็บไฟล์ และข้อมูลสำรอง โดยใช้กุญแจที่เราจัดการเอง"
+      },
+      "fieldLevel": {
+        "label": "การเข้ารหัสระดับฟิลด์",
+        "detail": "ฟิลด์ที่อ่อนไหวเป็นรายรายการ เช่น ความลับ MFA และกุญแจลงลายมือชื่อ ถูกเข้ารหัสแยกก่อนจัดเก็บ"
+      },
+      "inTransit": {
+        "label": "การเข้ารหัสระหว่างส่ง",
+        "detail": "ใช้ TLS 1.3 เป็นขั้นต่ำบนทุก endpoint สาธารณะ และปิด TLS รุ่นเก่าทั้งหมด"
+      },
+      "isolation": {
+        "label": "การแยกข้อมูลระหว่างองค์กร",
+        "detail": "ทุกตารางมีนโยบายที่บังคับใช้ในระดับฐานข้อมูล ทำให้องค์กรหนึ่งไม่สามารถอ่านข้อมูลของอีกองค์กรได้ แม้จะข้ามชั้นแอปพลิเคชันไปแล้วก็ตาม และมีการทดสอบข้ามองค์กรทุกครั้งที่ build"
+      },
+      "mesh": {
+        "label": "mTLS ระหว่างเซอร์วิส",
+        "detail": "การทำ mutual TLS ระหว่างเซอร์วิสภายในถูกกำหนดไว้แล้ว แต่ยังไม่ได้ติดตั้งใช้งาน"
+      },
+      "logRedaction": {
+        "label": "การปิดบังข้อมูลใน log อัตโนมัติ",
+        "detail": "ปัจจุบันอาศัยแนวปฏิบัติของทีมพัฒนาในการไม่บันทึกข้อมูลส่วนบุคคลลง log ยังไม่มีการบังคับอัตโนมัติ"
+      },
+      "subjectRights": {
+        "label": "การใช้สิทธิด้วยตนเอง",
+        "detail": "คำขอเข้าถึง โอนย้าย ลบ และระงับการใช้ข้อมูล ดำเนินการโดยเจ้าหน้าที่คุ้มครองข้อมูลส่วนบุคคล ยังไม่มีช่องทางทำเองในระบบ"
+      },
+      "breach": {
+        "label": "การแจ้งเหตุละเมิดอัตโนมัติ",
+        "detail": "ขั้นตอนแจ้งเหตุภายใน 72 ชั่วโมงตามที่ PDPA กำหนด ยังไม่ได้พัฒนา"
+      }
+    },
+    "certs": {
+      "heading": "การรับรองมาตรฐาน",
+      "note": "ปัจจุบันเรายังไม่ได้รับการรับรองใด ๆ ในรายการนี้ จึงระบุเป้าหมายไว้เพื่อไม่ให้สถานะกำกวม",
+      "soc2": {
+        "label": "SOC 2 Type II",
+        "detail": "ครอบคลุม Security, Availability, Confidentiality เริ่มตรวจ 6 เดือนก่อนเปลี่ยนผ่าน Stage 1→2"
+      },
+      "iso27001": {
+        "label": "ISO/IEC 27001:2022",
+        "detail": "ระบบบริหารความมั่นคงปลอดภัยสารสนเทศ ยังไม่ได้จัดตั้ง ISMS ซึ่งเป็นช่องว่างใหญ่ที่สุดต่อการรับรอง"
+      },
+      "pdpa": {
+        "label": "การตรวจสอบ PDPA (ไทย)",
+        "detail": "ตรวจประจำปี เริ่ม 6 เดือนก่อนรับลูกค้าองค์กรรายแรกในไทย"
+      }
+    },
+    "subprocessors": {
+      "heading": "ผู้ประมวลผลข้อมูลภายนอก",
+      "note": "บุคคลที่สามที่อาจประมวลผลข้อมูลส่วนบุคคลในนามของเรา",
+      "colName": "ผู้ประมวลผล",
+      "colPurpose": "วัตถุประสงค์",
+      "colRegion": "ภูมิภาค",
+      "aws": {
+        "name": "Amazon Web Services",
+        "purpose": "ฐานข้อมูล พื้นที่จัดเก็บไฟล์ ระบบจัดการความลับ และ Kubernetes"
+      },
+      "awsSns": {
+        "name": "AWS SNS",
+        "purpose": "ส่งรหัสเข้าสู่ระบบทาง SMS โดยตรึงไว้ที่ endpoint ที่รองรับ SMS"
+      },
+      "openai": {
+        "name": "OpenAI",
+        "purpose": "สร้างรายงานด้วย AI โดยตัดข้อมูลส่วนบุคคลออกก่อนส่งข้อความใด ๆ"
+      },
+      "cloudflare": {
+        "name": "Cloudflare",
+        "purpose": "ไฟร์วอลล์แอปพลิเคชันเว็บและ CDN"
+      }
+    },
+    "residency": {
+      "heading": "ถิ่นที่จัดเก็บข้อมูล",
+      "body": "ข้อมูลถูกจัดเก็บในภูมิภาคที่กำหนดให้องค์กรของคุณ ได้แก่ ไทย (ap-southeast-7) สำหรับองค์กรไทย ไอร์แลนด์ (eu-west-1) สำหรับองค์กรในสหภาพยุโรป และสิงคโปร์ (ap-southeast-1) สำหรับกรณีอื่น โดยมีสิงคโปร์เป็นภูมิภาคสำรองสำหรับข้อมูลของไทย การส่งข้อมูลข้ามพรมแดนตามปกติมีเพียงกรณีเดียวคือการส่งรหัสเข้าสู่ระบบทาง SMS"
+    },
+    "footer": "หากมีคำถามเกี่ยวกับหน้านี้ หรือต้องการใช้สิทธิเหนือข้อมูลของคุณ ติดต่อเจ้าหน้าที่คุ้มครองข้อมูลส่วนบุคคลของเรา โดยที่อยู่ติดต่อประกาศไว้ในนโยบายความเป็นส่วนตัวในแอป"
+  },
+  "sync": {
+    "savedOffline": "บันทึกไว้ในเครื่องแล้ว จะซิงก์ให้เมื่อกลับมาออนไลน์",
+    "photoNotQueued": "รูปภาพไม่ได้ถูกบันทึก เพราะต้องใช้การเชื่อมต่อ กรุณาแนบใหม่ภายหลัง"
+  },
+  "centralPrices": {
+    "error": {
+      "invalidCursor": "ลิงก์หน้านี้หมดอายุ เริ่มใหม่จากหน้าแรก"
+    }
+  },
+  "boq": {
+    "centralPrice": {
+      "error": {
+        "unavailable": "ไม่มีราคากลางที่มีผลสำหรับรหัสรายการนี้",
+        "unitCostConflict": "ระบุราคาต่อหน่วยหรือใช้ราคากลางอย่างใดอย่างหนึ่ง"
+      }
+    }
+  }
+}

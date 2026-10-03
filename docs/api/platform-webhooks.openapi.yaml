@@ -1,0 +1,181 @@
+openapi: '3.1.0'
+info:
+  title: Construction OS — Platform Webhooks API
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Generic webhook receivers for external system integrations.
+    These endpoints are called by external systems (CRM, contract management) to signal
+    platform-level events. Authentication uses a pre-shared HMAC-SHA256 secret.
+
+    All endpoints are unauthenticated at the JWT level — callers present an HMAC-SHA256
+    signature in the `X-Webhook-Signature` header instead.
+
+    **Reviewed 2026-08-31** against `backend/src/modules/platform-webhook/` at the origin/develop
+    merge. Nothing in that module changed since this document was last written except an added
+    README — no controller, no DTO, no service. This line records the comparison the freshness gate
+    asks for, which compares commit timestamps and so counted the README as a source change.
+servers:
+  - url: /api/v1
+    description: Current version — relative, so the document works behind whatever host serves it
+
+components:
+  securitySchemes:
+    webhookHmac:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: |
+        HMAC-SHA256 over `"<X-Webhook-Timestamp>." + rawBody`, hex-encoded, with the secret from
+        `PLATFORM_WEBHOOK_SECRET`. Format: `sha256=<hex-digest>`.
+
+        The paired `X-Webhook-Timestamp` header is not a second scheme — it is part of what this
+        signature covers, which is why it cannot be tampered with independently. See the endpoint
+        description for the accepted window and the rollout gate.
+
+  schemas:
+    EnterpriseContractSignedPayload:
+      type: object
+      required: [tenant_id]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: ID of the tenant whose contract was signed
+          example: 550e8400-e29b-41d4-a716-446655440000
+        contract_reference:
+          type: string
+          maxLength: 255
+          description: |
+            Optional. External contract ID from the calling system (CRM deal ID,
+            contract management reference, etc.). Stored as-is and forwarded in the
+            platform.enterprise.contract_signed.v1 Kafka event.
+          example: CRM-CONTRACT-2026-00142
+
+    WebhookAcceptedResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Webhook accepted
+        workflowId:
+          type: string
+          description: Temporal workflow ID started as a result of this webhook
+          example: enterprise-provisioning-550e8400-e29b-41d4-a716-446655440000
+        tenantId:
+          type: string
+          format: uuid
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: COS-WEBHOOK-001
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+paths:
+  /platform/webhooks/enterprise-contract-signed:
+    post:
+      operationId: postPlatformWebhooksEnterpriseContractSigned
+      summary: Receive enterprise contract-signed signal from external system
+      description: |
+        Generic webhook endpoint. Called by any external system (CRM, contract management
+        platform) when an Enterprise tenant signs a contract requiring dedicated DB isolation.
+
+        Starts `EnterpriseProvisioningWorkflow` via Temporal (task queue: enterprise-provisioning) —
+        the same workflow `PATCH /api/v1/admin/tenants/{tenantId}/mark-contracted` starts from the
+        Admin Panel. The two paths differ in one respect: this is a signed system request, not a
+        SYSTEM_ADMIN action, so it carries no justification and writes no admin audit row; §6.7's
+        mandatory reason and audit apply to the admin path only.
+
+        **Authentication:** HMAC-SHA256 signature verification over `timestamp.body`.
+
+        ```
+        X-Webhook-Timestamp: 1787500000000            # epoch ms, or an ISO-8601 instant
+        X-Webhook-Signature: sha256=<hex(HMAC-SHA256("<timestamp>." + body, PLATFORM_WEBHOOK_SECRET))>
+        ```
+
+        The timestamp is inside the signed payload deliberately: signing the body alone would let an
+        attacker replay a captured request forever, and signing them separately would let the
+        timestamp be edited without breaking the signature. A stamped request is rejected when the
+        timestamp is more than **5 minutes** from the server's clock in EITHER direction — one far
+        in the future is as suspect as one far in the past.
+
+        **Rollout.** An unstamped request still verifies against the legacy body-only form while
+        `WEBHOOK_REPLAY_PROTECTION` is off, and the server logs
+        `webhook.replay-protection.unstamped` each time. With the flag on, a missing
+        `X-Webhook-Timestamp` is a 401. Send the header now — the legacy form exists to keep senders
+        working across the switch, not as a supported mode.
+
+        **Idempotency:** Temporal rejects duplicate workflow starts for the same tenant_id.
+        Returns 409 if a workflow is already running or completed.
+
+        **Prerequisites (enforced server-side):**
+        - Tenant with `tenant_id` must exist
+        - Tenant plan_type must be ENTERPRISE
+        - Tenant must be active (is_active = true)
+        - dedicated_db_url must be NULL
+
+        Emits Kafka event: `platform.enterprise.contract_signed.v1`
+      tags: [platform-webhooks]
+      security:
+        - webhookHmac: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnterpriseContractSignedPayload'
+      responses:
+        '202':
+          description: Webhook accepted — provisioning workflow started asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookAcceptedResponse'
+        '400':
+          description: |
+            Precondition failed. Possible reasons:
+            - Tenant is not ENTERPRISE plan
+            - Tenant is inactive
+            - dedicated_db_url is already set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: |
+            Missing or invalid `X-Webhook-Signature`; or, with replay protection enabled, a missing,
+            malformed, or out-of-window `X-Webhook-Timestamp`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Provisioning workflow already running or completed for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

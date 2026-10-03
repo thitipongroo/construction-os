@@ -1,0 +1,116 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8888'
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+          image: otel/opentelemetry-collector-contrib:0.103.0
+          args: ['--config=/conf/otel-collector-config.yml']
+          # BOTH vars are MANDATORY. Collector 0.103.0 has no default-value substitution syntax
+          # (`${env:VAR:-default}` is rejected), and an unset var resolves to an empty string —
+          # so omitting either yields an invalid config, not a safe fallback. See ADR-075.
+          env:
+            # Populates deployment.environment on every span. Override per overlay:
+            # development | staging | production.
+            - name: ENV
+              value: 'production'
+            # tail_sampling probabilistic baseline, in PERCENT (0–100) — spec §31.5:
+            # development=100, staging=10, production=1.
+            - name: OTEL_SAMPLING_PERCENTAGE
+              value: '1'
+          ports:
+            - containerPort: 4317 # OTLP gRPC
+              name: otlp-grpc
+            - containerPort: 4318 # OTLP HTTP
+              name: otlp-http
+            - containerPort: 8888 # Prometheus self-metrics
+              name: metrics
+            - containerPort: 9090 # Prometheus metrics export
+              name: prom-export
+            - containerPort: 13133 # Health check
+              name: health
+          resources:
+            requests:
+              cpu: '200m'
+              memory: '256Mi'
+            limits:
+              cpu: '1000m'
+              memory: '1Gi'
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+
+
+# NOTE: the otel-collector-config ConfigMap is NOT declared in this file. It is generated from the
+# real otel-collector-config.yml by the kustomize configMapGenerator in kustomization.yaml, which
+# also appends a content hash to the name so a config change rolls the pods. A hand-written
+# ConfigMap used to sit here containing only two comment lines — the collector would have mounted an
+# empty config. Deploy with `kubectl apply -k` on an overlay, never `kubectl apply -f` on this file.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+    - name: prom-export
+      port: 9090
+      targetPort: 9090

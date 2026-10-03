@@ -1,0 +1,442 @@
+// Files routes — the 6 endpoints from spec §Phase 9, plus the permanent image URL (ADR-105).
+// POST   /api/v1/files/upload
+// GET    /api/v1/files/:fileId/url        signed, 1 hour
+// GET    /api/v1/files/:fileId/image      permanent, bearer-authenticated — ADR-105
+// GET    /api/v1/files/:fileId
+// DELETE /api/v1/files/:fileId
+// GET    /api/v1/files
+// GET    /api/v1/files/by-entity/:entityType/:entityId
+
+import { createHash } from 'node:crypto';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { v4 as uuidv4 } from 'uuid';
+import {
+  validateFile,
+  readMultipartBuffer,
+  sizeLimitFor,
+  magicByteMismatch,
+  toBasename,
+} from '../middleware/validation';
+import { buildError, FILE_ERRORS } from '../errors';
+import { runAntivirusScan } from '../services/scan-runner';
+import { buildStoredKey } from '../util/stored-key';
+import { isValidCategory } from '../util/category';
+import { createLogger } from '@cos/logger';
+
+const logger = createLogger('file-service.routes');
+
+export async function filesRoutes(app: FastifyInstance): Promise<void> {
+  // POST /api/v1/files/upload
+  app.post('/upload', async (request: FastifyRequest, reply: FastifyReply) => {
+    const part = await request.file();
+    if (!part) {
+      return reply.status(422).send(buildError('MIME_TYPE_NOT_ALLOWED', request.traceId));
+    }
+
+    const mimeType = part.mimetype;
+    // The multipart Content-Disposition filename is attacker-controlled and is NOT sanitized by
+    // @fastify/multipart, so it can carry path separators (e.g. "../../x.png"). Reduce it to its
+    // basename before it reaches the object key / DB, mirroring the ZIP extraction path
+    // (zip-extraction.service.ts uses entry.fileName.split('/').pop()). Strip both '/' and '\'.
+    const filename = toBasename(part.filename);
+    const entityType = (request.query as Record<string, string>)['entity_type'] ?? null;
+    const entityId = (request.query as Record<string, string>)['entity_id'] ?? null;
+
+    // Reject a blocked extension / disallowed MIME BEFORE buffering the stream — never read a 1 GB
+    // disallowed upload into memory (size=0 passes the size gate, so only ext + MIME are checked here).
+    const metaError = validateFile(filename, mimeType, 0);
+    if (metaError) {
+      return reply.status(metaError.httpStatus).send({
+        error: {
+          code: metaError.code,
+          message: metaError.message,
+          traceId: request.traceId,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+
+    // Read with the per-type cap enforced while streaming (M6 — bounded memory).
+    const { buffer, size, truncated } = await readMultipartBuffer(part, sizeLimitFor(mimeType));
+    if (truncated) {
+      return reply
+        .status(FILE_ERRORS.FILE_TOO_LARGE.httpStatus)
+        .send(buildError('FILE_TOO_LARGE', request.traceId));
+    }
+
+    // Server-side content check: reject when the magic bytes contradict the declared type (M7).
+    if (magicByteMismatch(buffer, mimeType)) {
+      return reply
+        .status(FILE_ERRORS.MIME_CONTENT_MISMATCH.httpStatus)
+        .send(buildError('MIME_CONTENT_MISMATCH', request.traceId));
+    }
+
+    const fileId = uuidv4();
+    const storedKey = buildStoredKey(fileId, filename);
+    const bucketName = app.minio.bucketName(request.tenantId);
+
+    // Store to MinIO
+    try {
+      await app.minio.uploadFile({ tenantId: request.tenantId, storedKey, buffer, mimeType });
+    } catch (err) {
+      logger.error({ err, traceId: request.traceId }, 'file.upload.minio_error');
+      return reply.status(500).send(buildError('UPLOAD_FAILED', request.traceId));
+    }
+
+    const isArchive = mimeType === 'application/zip';
+
+    // Persist metadata (PENDING_SCAN)
+    // SHA-256 of the content — the cryptographic anchor for document signing (ADR-058 CT-3).
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+
+    const row = await app.db.insertFile({
+      fileId,
+      tenantId: request.tenantId,
+      originalFilename: filename,
+      storedKey,
+      bucketName,
+      mimeType,
+      fileSizeBytes: size,
+      uploadedBy: request.userId,
+      isArchive,
+      sha256,
+    });
+
+    if (entityType && entityId) {
+      await app.db.insertMetadata({
+        metadataId: uuidv4(),
+        fileId,
+        tenantId: request.tenantId,
+        entityType,
+        entityId,
+      });
+    }
+
+    // Emit file.uploaded event immediately (PENDING_SCAN — consumer knows to wait for CLEAN)
+    await app.kafka.publishFileUploaded({
+      tenantId: request.tenantId,
+      actorId: request.userId,
+      traceId: request.traceId,
+      payload: {
+        file_id: fileId,
+        tenant_id: request.tenantId,
+        entity_type: entityType,
+        entity_id: entityId,
+        mime_type: mimeType,
+      },
+    });
+
+    // Async antivirus scan — fire and forget (upload response is immediate).
+    // scan(fileId) re-fetches the stored bytes from MinIO (spec §Phase 9 decoupled contract).
+    setImmediate(() => {
+      void runAntivirusScan(
+        app,
+        fileId,
+        storedKey,
+        request.tenantId,
+        request.userId,
+        request.traceId,
+      );
+    });
+
+    // Bulk ZIP upload → start the async sandboxed extraction workflow (PO decision, spec §Phase 9).
+    if (isArchive) {
+      await app.extraction.startExtraction(fileId).catch((err) => {
+        logger.error(
+          { err, file_id: fileId, traceId: request.traceId },
+          'file.extraction.start_failed',
+        );
+      });
+    }
+
+    logger.info(
+      { file_id: fileId, tenant_id: request.tenantId, traceId: request.traceId },
+      'file.uploaded',
+    );
+    return reply.status(201).send({
+      file_id: row.file_id,
+      original_filename: row.original_filename,
+      mime_type: row.mime_type,
+      file_size_bytes: row.file_size_bytes.toString(),
+      file_status: row.file_status,
+      uploaded_at: row.uploaded_at.toISOString(),
+      sha256: row.sha256,
+    });
+  });
+
+  // GET /api/v1/files/:fileId/url
+  app.get('/:fileId/url', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { fileId } = request.params as { fileId: string };
+    const file = await app.db.findFileById(fileId, request.tenantId);
+
+    if (!file) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+    if (file.deleted_at) {
+      return reply.status(404).send(buildError('FILE_DELETED', request.traceId));
+    }
+    // Do not hand out a download URL until ClamAV has cleared the file. The scan is async (fire-and-
+    // forget after upload), so an object is PENDING_SCAN for a window and QUARANTINED if infected —
+    // serving either would let unscanned/malicious bytes reach another user (spec §Phase 9).
+    if (file.file_status !== 'CLEAN') {
+      return reply
+        .status(FILE_ERRORS.FILE_NOT_CLEAN.httpStatus)
+        .send(buildError('FILE_NOT_CLEAN', request.traceId));
+    }
+
+    try {
+      const url = await app.minio.getSignedUrl(request.tenantId, file.stored_key);
+      return reply.send({ url, expires_in_seconds: app.config.signedUrlTtlSeconds });
+    } catch (err) {
+      logger.error({ err, file_id: fileId, traceId: request.traceId }, 'file.signed_url.error');
+      return reply.status(500).send(buildError('SIGNED_URL_FAILED', request.traceId));
+    }
+  });
+
+  // GET /api/v1/files/:fileId/image
+  //
+  // ── THE ONE URL IN THIS SERVICE THAT DOES NOT EXPIRE ──────────────────────────────────────────
+  //
+  // Added 2026-09-13 (ADR-105) for profile photos. `platform.users.photo_url` stores a URL and is
+  // read on every screen that draws an avatar, but the only URL this service could issue was a
+  // presigned one with a one-hour TTL (`SIGNED_URL_TTL_SECONDS`, default 3600) — so a photo saved
+  // to that column would 403 an hour after it was set. The column's own migration
+  // (20260716000001) always intended "the file-service URL"; this is the URL it meant.
+  //
+  // NOTHING IS RELAXED TO MAKE IT PERMANENT. Same bearer token, same tenant scope, same CLEAN gate
+  // as `/:fileId/url` above. "Permanent" here means only that the AUTHORISATION IS IN THE HEADER
+  // RATHER THAN IN THE URL: a presigned URL carries its own credential and therefore has to expire,
+  // and one that authenticates per request does not. This route is NOT public, and this service
+  // still has no unauthenticated path but its two health probes — see `plugins/auth.ts`, which
+  // explains at length why there is no gateway behind which one could be safe.
+  //
+  // The cost is stated rather than hidden: a photo URL pasted into a browser will not render, and
+  // the client must attach the token (apps/mobile `lib/fileImageSource.ts`). That is the correct
+  // trade for a face — `platform.users.photo_url` is `@pdpa(category: "identity")` and QM-5 makes a
+  // shareable link to one a data-protection question, not a convenience question.
+  //
+  // IMAGES ONLY, and that is a boundary rather than a formality. Serving anything would make this a
+  // second general download path alongside the signed-URL route, free to drift from it, and would
+  // let a 200 MB DWG stream through the pod where an image caps at 20 MB (`sizeLimitFor`).
+  app.get('/:fileId/image', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { fileId } = request.params as { fileId: string };
+    const file = await app.db.findFileById(fileId, request.tenantId);
+
+    if (!file) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+    if (file.deleted_at) {
+      return reply.status(404).send(buildError('FILE_DELETED', request.traceId));
+    }
+    if (!file.mime_type.startsWith('image/')) {
+      return reply
+        .status(FILE_ERRORS.NOT_AN_IMAGE.httpStatus)
+        .send(buildError('NOT_AN_IMAGE', request.traceId));
+    }
+    // Same gate as the signed-URL route, for the same reason: the scan is async, so an object is
+    // PENDING_SCAN for a window and QUARANTINED if infected, and serving either would put unscanned
+    // bytes in front of another user.
+    if (file.file_status !== 'CLEAN') {
+      return reply
+        .status(FILE_ERRORS.FILE_NOT_CLEAN.httpStatus)
+        .send(buildError('FILE_NOT_CLEAN', request.traceId));
+    }
+
+    try {
+      const stream = await app.minio.getObjectStream(request.tenantId, file.stored_key);
+      reply.header('content-type', file.mime_type);
+      reply.header('content-length', file.file_size_bytes);
+      // PRIVATE, never `public`: this is one tenant's data behind a bearer token, so a shared proxy
+      // must not keep a copy another caller could be handed. The long max-age is safe because the
+      // URL names an immutable object — `buildStoredKey` mints a fresh uuid per upload, so changing
+      // a photo changes the URL rather than the bytes behind it.
+      reply.header('cache-control', 'private, max-age=86400, immutable');
+      // The content hash we already store. A revisit revalidates to a 304 instead of streaming a
+      // face again on every screen that draws an avatar.
+      if (file.sha256) reply.header('etag', `"${file.sha256}"`);
+      return reply.send(stream);
+    } catch (err) {
+      logger.error({ err, file_id: fileId, traceId: request.traceId }, 'file.image.read_error');
+      return reply.status(500).send(buildError('DOWNLOAD_FAILED', request.traceId));
+    }
+  });
+
+  // GET /api/v1/files/:fileId
+  app.get('/:fileId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { fileId } = request.params as { fileId: string };
+    const file = await app.db.findFileById(fileId, request.tenantId);
+
+    if (!file) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+
+    return reply.send({
+      file_id: file.file_id,
+      original_filename: file.original_filename,
+      mime_type: file.mime_type,
+      file_size_bytes: file.file_size_bytes.toString(),
+      file_status: file.file_status,
+      uploaded_by: file.uploaded_by,
+      uploaded_at: file.uploaded_at.toISOString(),
+      deleted_at: file.deleted_at?.toISOString() ?? null,
+      sha256: file.sha256,
+    });
+  });
+
+  // DELETE /api/v1/files/:fileId  (soft delete)
+  app.delete('/:fileId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { fileId } = request.params as { fileId: string };
+    const deleted = await app.db.softDeleteFile(fileId, request.tenantId);
+
+    if (!deleted) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+
+    logger.info(
+      { file_id: fileId, tenant_id: request.tenantId, traceId: request.traceId },
+      'file.soft_deleted',
+    );
+    return reply.status(204).send();
+  });
+
+  // GET /api/v1/files
+  app.get('/', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as Record<string, string>;
+    const limit = Math.min(parseInt(query['limit'] ?? '20', 10), 100);
+    const offset = parseInt(query['offset'] ?? '0', 10);
+
+    const files = await app.db.listFiles({ tenantId: request.tenantId, limit, offset });
+    return reply.send({ data: files.map(toFileDto), limit, offset });
+  });
+
+  // GET /api/v1/files/by-entity/:entityType/:entityId
+  app.get(
+    '/by-entity/:entityType/:entityId',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { entityType, entityId } = request.params as { entityType: string; entityId: string };
+      const files = await app.db.listFilesByEntity({
+        tenantId: request.tenantId,
+        entityType,
+        entityId,
+      });
+      return reply.send({ data: files.map(toFileDto) });
+    },
+  );
+
+  // POST /api/v1/files/admin/:fileId/recover  — SYSTEM_ADMIN only
+  // Moves a quarantined file back to the regular bucket and resets status to CLEAN.
+  app.post('/admin/:fileId/recover', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.userRole !== 'SYSTEM_ADMIN') {
+      return reply.status(403).send(buildError('FORBIDDEN', request.traceId));
+    }
+
+    const { fileId } = request.params as { fileId: string };
+    const file = await app.db.findFileByIdAdmin(fileId);
+
+    if (!file) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+    if (file.file_status !== 'QUARANTINED') {
+      return reply.status(422).send(buildError('FILE_NOT_QUARANTINED', request.traceId));
+    }
+
+    await app.minio.moveFromQuarantine(file.tenant_id, file.stored_key);
+    await app.db.updateFileStatus(fileId, 'CLEAN');
+
+    logger.info(
+      {
+        file_id: fileId,
+        tenant_id: file.tenant_id,
+        actor_id: request.userId,
+        traceId: request.traceId,
+      },
+      'file.quarantine.recovered',
+    );
+    return reply.send({ file_id: fileId, file_status: 'CLEAN' });
+  });
+
+  // ── Retention policies (TENANT_ADMIN) ──────────────────────────────────────
+  // GET /api/v1/files/retention-policies — list per-category retention policies
+  app.get('/retention-policies', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.userRole !== 'TENANT_ADMIN') {
+      return reply.status(403).send(buildError('FORBIDDEN', request.traceId));
+    }
+    const policies = await app.db.listRetentionPolicies(request.tenantId);
+    return reply.send({ data: policies });
+  });
+
+  // PUT /api/v1/files/retention-policies — upsert { category, retention_days }
+  app.put('/retention-policies', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.userRole !== 'TENANT_ADMIN') {
+      return reply.status(403).send(buildError('FORBIDDEN', request.traceId));
+    }
+    const body = (request.body ?? {}) as { category?: string; retention_days?: number };
+    if (
+      typeof body.category !== 'string' ||
+      !isValidCategory(body.category) ||
+      typeof body.retention_days !== 'number' ||
+      !Number.isInteger(body.retention_days) ||
+      body.retention_days <= 0
+    ) {
+      return reply.status(422).send(buildError('INVALID_RETENTION_POLICY', request.traceId));
+    }
+    const policy = await app.db.upsertRetentionPolicy(
+      request.tenantId,
+      body.category,
+      body.retention_days,
+    );
+    return reply.send(policy);
+  });
+
+  // ── Legal hold (WORM; TENANT_ADMIN) ────────────────────────────────────────
+  // POST /api/v1/files/:fileId/legal-hold — place a hold (blocks all deletion)
+  app.post('/:fileId/legal-hold', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.userRole !== 'TENANT_ADMIN') {
+      return reply.status(403).send(buildError('FORBIDDEN', request.traceId));
+    }
+    const { fileId } = request.params as { fileId: string };
+    const body = (request.body ?? {}) as { reason?: string };
+    const ok = await app.db.setLegalHold(
+      fileId,
+      request.tenantId,
+      body.reason ?? '',
+      request.userId,
+    );
+    if (!ok) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+    return reply.send({ file_id: fileId, legal_hold: true });
+  });
+
+  // DELETE /api/v1/files/:fileId/legal-hold — release a hold
+  app.delete('/:fileId/legal-hold', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.userRole !== 'TENANT_ADMIN') {
+      return reply.status(403).send(buildError('FORBIDDEN', request.traceId));
+    }
+    const { fileId } = request.params as { fileId: string };
+    const ok = await app.db.releaseLegalHold(fileId, request.tenantId);
+    if (!ok) {
+      return reply.status(404).send(buildError('FILE_NOT_FOUND', request.traceId));
+    }
+    return reply.send({ file_id: fileId, legal_hold: false });
+  });
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// Re-exported so existing importers (and tests) keep the same path. Implementation lives in
+// scan-runner so the ZIP extraction worker can reuse it with its own service instances.
+export { runAntivirusScan };
+
+function toFileDto(file: import('../types').StoredFileRow) {
+  return {
+    file_id: file.file_id,
+    original_filename: file.original_filename,
+    mime_type: file.mime_type,
+    file_size_bytes: file.file_size_bytes.toString(),
+    file_status: file.file_status,
+    uploaded_by: file.uploaded_by,
+    uploaded_at:
+      file.uploaded_at instanceof Date ? file.uploaded_at.toISOString() : String(file.uploaded_at),
+  };
+}

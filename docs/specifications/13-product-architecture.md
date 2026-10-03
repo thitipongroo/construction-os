@@ -1,0 +1,440 @@
+---
+title: 'Product Architecture'
+version: '1.1.0'
+status: Active
+last_updated: '2026-06-10'
+authors:
+  - thitipongroo
+related_docs:
+  - 03-system-design.md
+  - 06-rbac-permission-matrix.md
+  - 14-api-architecture.md
+  - 21-mvp-scope.md
+---
+
+# 13. Product Architecture
+
+## Table of Contents
+
+- [13.1 Product Layering](#131-product-layering)
+  - [Layer 1 — Core Platform](#layer-1--core-platform)
+  - [Layer 2 — Construction Modules](#layer-2--construction-modules)
+  - [Layer 3 — Intelligence Layer](#layer-3--intelligence-layer)
+  - [Layer 4 — Ecosystem Layer](#layer-4--ecosystem-layer)
+- [13.2 Product Packaging](#132-product-packaging)
+  - [SMB Package](#smb-package)
+  - [Mid-market Package](#mid-market-package)
+  - [Enterprise Package](#enterprise-package)
+- [13.3 Financial Compliance Integrations](#133-financial-compliance-integrations)
+- [13.4 Domain Integrations](#134-domain-integrations)
+- [13.5 Additional Integration Decisions](#135-additional-integration-decisions)
+
+---
+
+## 13.1 Product Layering
+
+### Layer 1 — Core Platform
+
+Foundation :
+
+- Identity
+- Permissions
+- Tenant isolation
+- Audit logs
+- Notifications
+- Workflow engine
+- Document engine
+  > (implemented by Document Service in 03-system-design section 3.2; sits above the File Service storage layer).
+  >
+  > **MVP scope:** OCR only (Phase 11 AI OCR Pipeline) + file storage (Phase 9 File Service).
+  >
+  > **Post-MVP:** version management, format conversion, and drawing viewer are not in the MVP phase plan
+  >
+  > (absent from §21.2) — implement when scheduled post-MVP.
+- API gateway
+- Event bus
+
+### Layer 2 — Construction Modules
+
+Modules :
+
+- CRM
+- Project Management
+- BOQ Engine
+- Procurement
+- Site Operations
+- Workforce
+- Quality Control
+- Safety
+- Equipment
+- Finance
+- Asset Management
+
+### Layer 3 — Intelligence Layer
+
+Services :
+
+- AI Copilot
+- Forecasting engine
+- Risk scoring
+- Schedule prediction
+- Cost anomaly detection
+- Knowledge graph
+- Recommendation engine
+
+### Layer 4 — Ecosystem Layer
+
+Channels :
+
+- Vendor portal
+- Contractor portal
+- Customer portal
+- API marketplace
+- BIM integrations
+- IoT integrations
+- ERP integrations
+
+---
+
+## 13.2 Product Packaging
+
+### SMB Package
+
+Features :
+
+- Basic project management
+- Procurement
+- Cost tracking
+- Mobile app
+
+### Mid-market Package
+
+Features :
+
+- Multi-project
+- Workflow automation
+- AI forecasting (Layer B Analytical AI — activates when Layer B is released post-MVP; see 22-ai-architecture section
+  22.2 and 21-mvp-scope section 21.4)
+- Advanced finance
+
+### Enterprise Package
+
+Features :
+
+- Multi-entity
+- Custom workflows
+- Data lake
+- AI orchestration
+- Private deployment
+- SSO/SAML
+- Compliance tooling
+
+---
+
+## 13.3 Financial Compliance Integrations
+
+### Tax Calculation — Avalara AvaTax
+
+**Decision:** Avalara AvaTax API is the tax calculation engine for Construction OS.
+
+| Attribute            | Value                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| Provider             | Avalara AvaTax (cloud-based tax compliance SaaS)                                              |
+| Scope                | VAT, GST, Sales Tax — jurisdiction-specific rates calculated at PO and invoice creation       |
+| Integration point    | POST to AvaTax REST API with transaction details; returns `taxAmount` + line-level breakdown  |
+| Tenant configuration | `avalara_account_id` + `avalara_license_key` stored per tenant in AWS Secrets Manager / Vault |
+| Phase                | Phase 5 — activate when tenant issues first taxable invoice                                   |
+| Trigger              | Invoice creation or PO generation requiring tax calculation                                   |
+
+Avalara handles multi-jurisdiction tax compliance globally — the platform does not implement tax rate tables internally.
+
+---
+
+### Withholding Tax (WHT) Rules
+
+**Decision:** Default rules for Thailand; TENANT_ADMIN configures for other jurisdictions.
+
+**Thailand defaults (pre-seeded at tenant provisioning):**
+
+| Vendor type        | WHT rate |
+| ------------------ | -------- |
+| Services (general) | 3%       |
+| Rent / property    | 5%       |
+
+**Other jurisdictions:** TENANT_ADMIN configures rates via WHT rules table:
+
+```sql
+-- finance.wht_rules table schema
+  rule_id          UUID PK
+  tenant_id        UUID NOT NULL
+  jurisdiction_code VARCHAR(10) NOT NULL   — ISO 3166-1 alpha-2 (e.g. TH, SG, MY)
+  service_type     VARCHAR(100) NOT NULL   — e.g. "services", "rent", "royalties"
+  rate             DECIMAL(5,2) NOT NULL   — e.g. 3.00 = 3%
+  is_active        BOOLEAN DEFAULT true
+  UNIQUE: (tenant_id, jurisdiction_code, service_type)
+```
+
+WHT is calculated as a hook inside the Avalara AvaTax flow. WHT certificate reference number is tracked in `finance.payments.wht_certificate_ref`.
+
+> **The schema is `finance`, and it is named here because it once was not.** A second `wht_rules`
+> table existed in the `procurement` schema from 2026-06-04, with `jurisdiction` / `vendor_type`
+> instead of the `jurisdiction_code` / `service_type` above and no `is_active`. Nothing ever read it,
+> while `docs/api/procurement.openapi.yaml`, a `vendors.category` column comment and
+> `vendor-classification.ts` all pointed at it as authoritative — so a TENANT_ADMIN configuring a
+> jurisdiction where the documentation said to changed no tax. Consolidated onto `finance.wht_rules`
+> by migration `20260822000001_wht_rules_consolidate` (product-owner decision 2026-08-22), which also
+> added the row-level security §7.7 requires and the Thailand backfill the sentence above promises.
+> New tenants receive the two defaults from `TenantService.createTenant`, in the same transaction as
+> the tenant row.
+
+---
+
+### ERP Integration — Strategy Pattern
+
+**Decision:** Strategy pattern with a common `ERPIntegration` interface and one concrete adapter per ERP system.
+Each ERP system has its own STUB pending a real customer onboarding with that system.
+
+**Common interface (all adapters implement this):**
+
+```typescript
+interface ERPIntegration {
+  postCostTransaction(tx: CostTransaction): Promise<ERPPostingResult>;
+  postInvoice(invoice: VendorInvoice): Promise<ERPPostingResult>;
+  syncVendor(vendor: Vendor): Promise<void>;
+}
+```
+
+**Three adapter stubs (each STUB until customer with that ERP onboards):**
+
+| Adapter         | ERP System                                         |
+| --------------- | -------------------------------------------------- |
+| SAPAdapter      | SAP Business One / S/4HANA — webhook + iDoc format |
+| OracleAdapter   | Oracle Fusion Finance — REST API                   |
+| DynamicsAdapter | Microsoft Dynamics 365 Finance — REST API          |
+
+Each adapter is implemented only when the first tenant using that ERP system requests integration.
+API credentials, field mappings, and authentication are configured per-tenant in AWS Secrets Manager / Vault.
+
+For stub implementation behaviour (Type A — fail-fast), see `32-implementation-specifications` §32.9.
+
+---
+
+## 13.4 Domain Integrations
+
+### CRM Integration — Strategy Pattern
+
+**Decision:** Generic webhook receiver + per-CRM field mapper (Strategy pattern). Each CRM system has its own STUB pending
+a real tenant that uses that CRM.
+
+**Data flow (one direction only — CRM → COS):**
+
+```text
+CRM (won deal) → webhook POST → COS webhook receiver → createProjectFromLead() → Project created
+```
+
+**Common interface (all adapters implement this):**
+
+```typescript
+interface CRMIntegration {
+  createProjectFromLead(crmLeadId: string, tenantId: string): Promise<Project>;
+}
+```
+
+**Three adapter stubs (each STUB until tenant with that CRM onboards):**
+
+| Adapter           | CRM System                                           |
+| ----------------- | ---------------------------------------------------- |
+| SalesforceAdapter | Salesforce REST API — won Opportunity → project      |
+| HubSpotAdapter    | HubSpot Webhooks — deal stage "Closed Won" → project |
+| PipedriveAdapter  | Pipedrive Webhooks — deal status "won" → project     |
+
+Field mapping (CRM deal fields → COS project fields) is configured per-tenant per-CRM system.
+
+For stub implementation behaviour (Type A — fail-fast), see `32-implementation-specifications` §32.9.
+
+---
+
+### BIM Integration — IFC Parser
+
+**Decision:** Accept IFC format (ISO 16739-1:2018 — platform-agnostic open standard).
+Implement IFC parser first; any BIM software that exports IFC is compatible (Revit, ArchiCAD, Trimble, etc.).
+
+**File format:** IFC 2x3 minimum; IFC 4.0 preferred (see `33-digital-twin-iot` §33.2 normative standards).
+
+**Two integration points:**
+
+**Phase 3 — Project Structure Import:**
+
+```typescript
+interface BIMProjectStructure {
+  importProjectStructure(
+    bimFileUrl: string,
+    projectId: string,
+    tenantId: string,
+  ): Promise<BIMStructureResult>;
+}
+// BIMStructureResult: { phasesCreated, milestonesCreated, unmappedElements[] }
+// IFC mapping: IfcBuildingStorey → project phases, IfcSpace → milestones
+```
+
+**Phase 4 — BOQ Auto-population:**
+
+```typescript
+interface BIMQuantities {
+  importQuantities(
+    bimFileUrl: string,
+    boqVersionId: string,
+    tenantId: string,
+  ): Promise<BIMImportResult>;
+}
+// BIMImportResult: { itemsCreated, itemsUpdated, unmappedElements[], confidence }
+// IFC mapping: IfcElement quantities → BOQ line items (unit, quantity, unit_price placeholder)
+```
+
+**Implementation path:**
+
+1. IFC.js (open-source parser — `@thatopen/engine` or `web-ifc`) — platform-agnostic, handles all BIM software
+2. Autodesk Forge API / Trimble Connect API — optional vendor-specific connectors (add only if a tenant requires
+   cloud-based BIM platform sync)
+
+Both integration points ship as stubs until a tenant requests IFC import.
+For stub implementation behaviour (Type A — fail-fast), see `32-implementation-specifications` §32.9.
+
+---
+
+## 13.5 Additional Integration Decisions
+
+### API Monetization
+
+**Decision:** Kong Gateway usage plans — quota per tenant tier enforced via Kong rate limiting plugin.
+
+| Tier       | Monthly API call quota           | Overage action                    |
+| ---------- | -------------------------------- | --------------------------------- |
+| SMB        | 50,000 calls/month               | Block (429) + notify TENANT_ADMIN |
+| Mid-market | 100,000 calls/month              | Block (429) + notify TENANT_ADMIN |
+| Enterprise | Configurable (default 1,000,000) | Configurable (warn or block)      |
+
+Quota tracked via Kong usage plans plugin; metering data fed to ClickHouse for billing analytics (Phase 14).
+
+**Per-API-key quota (marketplace integrations):**
+
+Each OAuth2 client credentials API key is subject to an additional per-key monthly cap, independent of the tenant total.
+No single key may consume more than 20% of the tenant's monthly quota.
+
+| Tier       | Per-API-key monthly limit                    | Overage action                    |
+| ---------- | -------------------------------------------- | --------------------------------- |
+| SMB        | 10,000 calls/month per key                   | Block (429) + notify TENANT_ADMIN |
+| Mid-market | 20,000 calls/month per key                   | Block (429) + notify TENANT_ADMIN |
+| Enterprise | Configurable (default 200,000/month per key) | Configurable (warn or block)      |
+
+Kong enforces both limits simultaneously: tenant total quota and per-key quota. A request is rejected if either is exceeded.
+
+> **Scope:** Monthly quota applies to **external API traffic only** — third-party integrations authenticating via OAuth2
+> client credentials flow (ERP adapters, CRM webhooks, marketplace integrations, developer API keys). Internal web and
+> mobile app traffic (authenticated via user JWT from Keycloak/COS identity service) is **not subject to monthly quota**
+> and is governed solely by the per-minute rate limits in `14-api-architecture` §14.2.
+>
+> Kong distinguishes traffic by auth method: requests using OAuth2 client credentials (`client_id` + `client_secret`) are
+> metered against the quota; requests using user Bearer JWTs are not.
+
+---
+
+### Construction Financing
+
+**Decision:** Invoice factoring — tenant submits outstanding invoices to fintech partner; receives advance payment.
+
+| Attribute       | Value                                                                                          |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Model           | Invoice factoring (AR factoring)                                                               |
+| Data flow       | COS exports invoice data → fintech partner API → advance payment ref returned                  |
+| Interface       | `ConstructionFinancing.submitFactoringApplication(invoiceId, tenantId): Promise<FinancingRef>` |
+| Trigger         | Implement when first tenant requests invoice factoring with a specific fintech partner         |
+| Fintech partner | PO decision required — per-partner adapter (Strategy pattern, same as ERP integration)         |
+
+For stub implementation behaviour (Type A — fail-fast until fintech partner is contracted),
+see `32-implementation-specifications` §32.9.
+
+---
+
+### Biometric Check-In
+
+**Decision:** Generic SDK interface — any biometric hardware vendor SDK implements the same interface.
+
+```typescript
+interface BiometricCheckIn {
+  verifyCheckIn(workerId: string, projectId: string, method: BiometricMethod): Promise<boolean>;
+}
+type BiometricMethod = 'FINGERPRINT' | 'FACE_ID' | 'IRIS';
+```
+
+Vendor SDK is injected via DI at deployment time. No vendor is selected at the platform level — each site configures their
+vendor adapter. Credentials and SDK config stored per-site in AWS Secrets Manager / Vault.
+
+#### Platform-side acceptance criteria
+
+**Resolved 2026-08-22 (product owner).** The interface above previously defined only the signature and
+return type, so no acceptance behaviour could be tested (see docs/architecture/test-design/escalation-register.md §35.13 ESC-04). The
+platform now owns these criteria; biometric accuracy itself remains the vendor's SLA:
+
+| Criterion            | Value                                                                             |
+| -------------------- | --------------------------------------------------------------------------------- |
+| Timeout              | **5 seconds** per `verifyCheckIn` call                                            |
+| On timeout           | Fall back to `MANUAL` check-in — the worker is never blocked from checking in     |
+| Fallback recording   | The resulting attendance record stores `method = MANUAL` and flags the fallback   |
+| No adapter bound     | Log WARN + throw a typed exception (Type A fail-fast, `32-implementation-specifications` §32.9) |
+| Audit                | Every attempt (success, failure, timeout-fallback) is written to the audit log     |
+| Accuracy (FAR / FRR) | Vendor SLA per site — **not** a platform gate                                     |
+
+Rationale: the biometric device at a site entrance is external hardware whose response time the
+platform cannot control, and a queue of workers at shift start must never be blocked by a slow or
+offline scanner.
+
+---
+
+### IoT Device Integration
+
+**Decision:** MQTT 5.0 protocol (already normative in `33-digital-twin-iot` §33.2).
+
+| Attribute       | Value                                                        |
+| --------------- | ------------------------------------------------------------ |
+| Protocol        | MQTT 5.0 (OASIS Standard 2019)                               |
+| QoS             | QoS 1 minimum for telemetry; QoS 2 for critical state events |
+| Topic structure | `cos/v1/devices/{device_id}/telemetry`                       |
+| Broker          | **EMQX self-hosted on EKS (open-source, Apache-2.0)**        |
+| Interface       | `IoTIntegration.publishTelemetry(deviceId, payload): void`   |
+| Trigger         | Implement when first tenant deploys GPS-tracked equipment    |
+
+### Financial Infrastructure Provider (INT-005)
+
+**Decision:** Embedded fintech via BaaS — licensed regional banking APIs.
+**Resolved:** 2026-06-10
+
+- **Thailand (primary):** SCB API / Kasikorn Business API via Bank of Thailand Sandbox licence
+- **Vietnam (primary):** VietinBank API / BIDV API; compliant with SBV Open Banking decree
+- **Singapore:** PayNow / FAST API via MAS-licensed payment institution partnership
+- **Model:** Invoice factoring and milestone-linked draw-down loans via BaaS partners;
+  platform is data provider and origination channel — not the licensed lender
+- **Trigger:** Implement when first tenant requests invoice factoring with a confirmed partner;
+  per-partner adapter (Strategy pattern, same as ERP integration in §13.3)
+- **Regulatory path:** Bank of Thailand Sandbox enrolment required before TH launch;
+  MAS licensing guidance required before SG launch
+
+---
+
+### Post-Software Transition (BG-002)
+
+**Decision:** Platform-as-infrastructure model — API-first, AI-native, paradigm-agnostic.
+**Resolved:** 2026-06-10
+
+- **Architecture stance:** Every capability exposed via versioned REST API; no UI-only features
+- **AI-nativeness:** AI is the primary operational interface by Layer C; humans supervise,
+  not operate
+- **Paradigm agnosticism:** Compute paradigm transitions accommodated via the `LLMProvider`
+  and `EmbeddingProvider` interfaces — swap providers without replatforming
+- **Infrastructure contract:** Platform commits to open-standard data formats (Iceberg v3,
+  IFC, Avro) so tenant data is portable regardless of platform future
+
+---
+
+> 📎 See also: [03-system-design](03-system-design.md) · [06-rbac-permission-matrix](06-rbac-permission-matrix.md)
+> · [14-api-architecture](14-api-architecture.md) · [21-mvp-scope](21-mvp-scope.md)

@@ -1,0 +1,552 @@
+// Behaviour of the account settings card.
+//
+// Three rows here are deliberately NOT what they look like, and each is a decision that a test can
+// stop someone "fixing":
+//
+// The biometric switch is DISABLED, not hidden, when the device has nothing enrolled — hiding it
+// leaves a worker wondering where it went, and the OS, not this row, is where a fingerprint gets
+// enrolled.
+//
+// "Change Secure PIN" reports being unavailable rather than opening anything. This product has no
+// PIN: no column, no set/verify endpoint, no recovery path. A credential dialog with nothing behind
+// it is a security feature in name only.
+//
+// Language and Theme are SEGMENTED — both options visible, the selected one announced as selected.
+// Neither is an on/off, and a picker screen to choose between two items is a screen too many.
+//
+// THE PASSWORD ROW IS ABSENT ON A PATH A ACCOUNT, not disabled (ADR-104). A phone/OTP account has
+// no password its owner knows: the Keycloak user is created with no credential and every OTP
+// exchange writes a fresh random UUID. A disabled row says "not now" where the truth is "never".
+//
+// And the version is the REAL build version, not the mockup's "2.4.0-stable" — it is the one thing
+// on this card a user might quote in a support request, so it must never be decorative.
+
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
+import { I18nProvider } from '../../i18n';
+import { useBiometricStore } from '../../store/biometricStore';
+import { useThemeStore } from '../../store/themeStore';
+import { CosRole } from '@cos/types';
+import { useAuthStore } from '../../store/authStore';
+import { useLocaleStore } from '../../store/localeStore';
+import { AccountSettings } from '../AccountSettings';
+import { VIEWER_PERMISSION_TILES } from '../../lib/mockupFigures';
+
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: jest.fn(), back: jest.fn(), replace: jest.fn() }),
+}));
+
+// `<NotificationSettings />` renders inside this card and fetches its preferences on mount. LEAVING
+// THAT REQUEST UNMOCKED IS NOT HARMLESS: it reaches `api/client`, the 401 interceptor calls
+// `useAuthStore.getState().logout()`, and the store this spec sets in `beforeEach` is emptied
+// mid-test. It raced the render — the profile-head assertions failed roughly one run in four, with
+// the name and the id both back at their fallbacks — which is exactly what a flake that survives a
+// green run looks like. The component has its own spec; here it is mocked to silence.
+jest.mock('../../api/notifications', () => ({
+  getNotificationPreferences: jest.fn().mockResolvedValue([]),
+  updateNotificationPreferences: jest.fn().mockResolvedValue(undefined),
+}));
+
+// `GET /users/me` feeds the MFA row's state and the Password row's Path B test. Mocked rather than
+// left to reject, so each answer can be asserted.
+jest.mock('../../api/users', () => ({
+  getMe: jest.fn(),
+  requestMyPasswordResetEmail: jest.fn(),
+}));
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const users = require('../../api/users') as {
+  getMe: jest.Mock;
+  requestMyPasswordResetEmail: jest.Mock;
+};
+
+const ME = {
+  user_id: 'u-1111-aaaa',
+  email: 'v@example.com',
+  display_name: 'Vorawee S.',
+  photo_url: null,
+  role: 'CRM_SALES_MANAGER',
+  mfa_enabled: true,
+  employee_code: null,
+  position: 'CRM Manager',
+  phone_number: null,
+  password_changed_at: null,
+};
+
+/** A Path A account: a phone number, and `email = ''` — what `provisionPhoneUser` writes. */
+const PATH_A_ME = { ...ME, email: '', phone_number: '+66812345678' };
+
+function renderCard() {
+  return render(
+    <I18nProvider>
+      <AccountSettings />
+    </I18nProvider>,
+  );
+}
+
+describe('AccountSettings', () => {
+  let setEnabled: jest.Mock;
+  let setMode: jest.Mock;
+  let alert: jest.SpyInstance;
+
+  beforeEach(() => {
+    setEnabled = jest.fn().mockResolvedValue(undefined);
+    setMode = jest.fn().mockResolvedValue(undefined);
+    useBiometricStore.setState({ available: true, enabled: false, setEnabled } as never);
+    useThemeStore.setState({ mode: 'dark', setMode } as never);
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    users.getMe.mockReset();
+    users.getMe.mockResolvedValue(ME);
+    users.requestMyPasswordResetEmail.mockReset();
+    users.requestMyPasswordResetEmail.mockResolvedValue({ email: 'v@example.com' });
+    useAuthStore.setState({ displayName: 'Vorawee S.', userId: 'u-1111-aaaa' } as never);
+    // The language row toggles the locale and persists it, so a test running after it would
+    // otherwise render in Thai and every assertion on English copy would be an accident.
+    useLocaleStore.setState({ locale: 'en' } as never);
+  });
+
+  afterEach(() => alert.mockRestore());
+
+  it('renders the security and preference rows', async () => {
+    const { getByTestId } = await renderCard();
+
+    expect(getByTestId('profile-mfa-row')).toBeTruthy();
+    expect(getByTestId('biometric-row')).toBeTruthy();
+    expect(getByTestId('change-pin-row')).toBeTruthy();
+    expect(getByTestId('locale-row')).toBeTruthy();
+    expect(getByTestId('theme-row')).toBeTruthy();
+  });
+
+  it('turns the biometric lock on', async () => {
+    const { getByTestId } = await renderCard();
+
+    await fireEvent(getByTestId('biometric-row-switch'), 'valueChange', true);
+
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith(true));
+  });
+
+  it('turns it off again', async () => {
+    useBiometricStore.setState({ available: true, enabled: true, setEnabled } as never);
+
+    const { getByTestId } = await renderCard();
+
+    await fireEvent(getByTestId('biometric-row-switch'), 'valueChange', false);
+
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith(false));
+  });
+
+  // DISABLED, not hidden — see the note at the top of this file.
+  it('shows the biometric row disabled when the device has nothing enrolled', async () => {
+    useBiometricStore.setState({ available: false, enabled: false, setEnabled } as never);
+
+    const { getByTestId } = await renderCard();
+
+    expect(getByTestId('biometric-row-switch').props.disabled).toBe(true);
+  });
+
+  // `setEnabled` awaits SecureStore and the biometric prompt and guards neither, so it can reject.
+  // The switch reads its position from the store, so a failed enable already shows as the toggle
+  // staying put; what must not happen is the rejection escaping as an unhandled one, and what must
+  // not happen next is the row being left permanently busy.
+  it('recovers from a failed toggle rather than staying stuck', async () => {
+    setEnabled.mockRejectedValue(new Error('secure store unavailable'));
+
+    const { getByTestId } = await renderCard();
+
+    await fireEvent(getByTestId('biometric-row-switch'), 'valueChange', true);
+
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getByTestId('biometric-row-switch').props.disabled).toBe(false));
+  });
+
+  // No PIN exists in this product. The row is drawn because the mockup draws it, and it says so.
+  it('reports the secure PIN as unavailable rather than opening a dialog', async () => {
+    const { getByTestId } = await renderCard();
+
+    await fireEvent.press(getByTestId('change-pin-row'));
+
+    expect(alert).toHaveBeenCalled();
+  });
+
+  // BOTH OPTIONS ARE ON SCREEN AT ONCE since 2026-09-13 (Stitch 63c6dcca…). The language row used
+  // to show the CURRENT language behind a swap glyph, so a reader had to infer that tapping it
+  // meant "become the other one".
+  it('switches the language by pressing the other segment', async () => {
+    const { getByTestId } = await renderCard();
+
+    await fireEvent.press(getByTestId('locale-segmented-th'));
+
+    await waitFor(() => expect(getByTestId('locale-segmented-th')).toBeTruthy());
+  });
+
+  it('marks the signed-in locale as the selected segment and the other as not', async () => {
+    const { getByTestId } = await renderCard();
+
+    // A screen reader must be able to say WHICH of the two is in effect — the whole information a
+    // segmented control carries, and what a row of plain buttons loses.
+    expect(getByTestId('locale-segmented-en').props.accessibilityState.selected).toBe(true);
+    expect(getByTestId('locale-segmented-th').props.accessibilityState.selected).toBe(false);
+  });
+
+  it('switches the theme to light', async () => {
+    const { getByTestId } = await renderCard();
+
+    await fireEvent.press(getByTestId('theme-segmented-light'));
+
+    expect(setMode).toHaveBeenCalledWith('light');
+  });
+
+  it('marks dark as the selected segment for a dark session', async () => {
+    const { getByTestId } = await renderCard();
+
+    expect(getByTestId('theme-segmented-dark').props.accessibilityState.selected).toBe(true);
+    expect(getByTestId('theme-segmented-light').props.accessibilityState.selected).toBe(false);
+  });
+
+  // TWO MODES, NOT THE DRAWING'S THREE (PO decision E1). Its pill has a third
+  // `settings_brightness` "follow the system" button, and there is no system mode in the store —
+  // a segment that cannot be selected is worse than one fewer.
+  it('draws exactly two theme segments', async () => {
+    const { getByTestId, queryByTestId } = await renderCard();
+
+    expect(getByTestId('theme-segmented-light')).toBeTruthy();
+    expect(getByTestId('theme-segmented-dark')).toBeTruthy();
+    expect(queryByTestId('theme-segmented-system')).toBeNull();
+  });
+
+  // The one thing here a user might quote in a support request.
+  it('shows a build version', async () => {
+    const { getByTestId } = await renderCard();
+
+    expect(getByTestId('profile-version')).toBeTruthy();
+  });
+});
+
+// -- NO PROFILE HEAD (2026-09-14) -----------------------------------------------------------------
+//
+// The head added on 2026-09-10 was removed by product-owner decision: the Stitch screen this page
+// follows opens straight on Application Settings. These tests hold the ABSENCE rather than being
+// deleted with it — a head that came back would render perfectly, and nothing else would notice.
+// The name, position and id live on the navigation drawer's block; the sync state is the TopBar's.
+
+describe('AccountSettings - no profile head', () => {
+  let alert: jest.SpyInstance;
+
+  beforeEach(() => {
+    useBiometricStore.setState({
+      available: true,
+      enabled: false,
+      setEnabled: jest.fn(),
+    } as never);
+    useThemeStore.setState({ mode: 'dark', setMode: jest.fn() } as never);
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    users.getMe.mockReset();
+    users.getMe.mockResolvedValue(ME);
+    users.requestMyPasswordResetEmail.mockReset();
+    users.requestMyPasswordResetEmail.mockResolvedValue({ email: 'v@example.com' });
+    useAuthStore.setState({ displayName: 'Vorawee S.', userId: 'u-1111-aaaa' } as never);
+    // The language row toggles the locale and persists it, so a test running after it would
+    // otherwise render in Thai and every assertion on English copy would be an accident.
+    useLocaleStore.setState({ locale: 'en' } as never);
+  });
+
+  afterEach(() => alert.mockRestore());
+
+  // Asserted AFTER `/users/me` has answered — before it, a position could not render anyway, and
+  // an absence checked too early proves nothing.
+  it('draws no profile card, no sync row, and none of the fields the head carried', async () => {
+    const { getByTestId, queryByTestId, queryByText } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toHaveTextContent(/MFA active/));
+    expect(queryByTestId('account-profile-card')).toBeNull();
+    expect(queryByTestId('settings-sync-row')).toBeNull();
+    expect(queryByTestId('settings-job-title')).toBeNull();
+    expect(queryByTestId('settings-user-id')).toBeNull();
+    expect(queryByText('Vorawee S.')).toBeNull();
+    expect(queryByText(/CRM Manager/)).toBeNull();
+  });
+
+  // The employee code was the head's too. A worker account that has one must not surface it here.
+  it('does not print an employee code the account has', async () => {
+    users.getMe.mockResolvedValue({ ...ME, employee_code: 'EMP-0042' });
+
+    const { getByTestId, queryByText } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toHaveTextContent(/MFA active/));
+    expect(queryByText(/EMP-0042/)).toBeNull();
+  });
+
+  it('says nothing about a factor it could not read', async () => {
+    users.getMe.mockRejectedValue(new Error('offline'));
+
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(users.getMe).toHaveBeenCalled());
+    expect(getByTestId('profile-mfa-row')).not.toHaveTextContent(/MFA active|Not enrolled/);
+  });
+
+  // REAL: platform.users.mfa_enabled.
+  it('says the second factor is enrolled when it is', async () => {
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toHaveTextContent(/MFA active/));
+  });
+
+  it('says it is not enrolled when it is not', async () => {
+    users.getMe.mockResolvedValue({ ...ME, mfa_enabled: false });
+
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toHaveTextContent(/Not enrolled/));
+  });
+});
+
+describe('AccountSettings - the system group', () => {
+  let alert: jest.SpyInstance;
+
+  beforeEach(() => {
+    useBiometricStore.setState({
+      available: true,
+      enabled: false,
+      setEnabled: jest.fn(),
+    } as never);
+    useThemeStore.setState({ mode: 'dark', setMode: jest.fn() } as never);
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    users.getMe.mockReset();
+    users.getMe.mockResolvedValue(ME);
+    users.requestMyPasswordResetEmail.mockReset();
+    users.requestMyPasswordResetEmail.mockResolvedValue({ email: 'v@example.com' });
+    useAuthStore.setState({ displayName: 'Vorawee S.', userId: 'u-1111-aaaa' } as never);
+    // The language row toggles the locale and persists it, so a test running after it would
+    // otherwise render in Thai and every assertion on English copy would be an accident.
+    useLocaleStore.setState({ locale: 'en' } as never);
+  });
+
+  afterEach(() => alert.mockRestore());
+
+  // MEASURED, not drawn: PRAGMA page_count x page_size, shown against the 17.7 ceiling it is
+  // measured for. The drawing's "2.4 GB" is a figure no device here reported.
+  it('shows the offline database size against its ceiling', async () => {
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('offline-data-row')).toBeTruthy());
+    expect(getByTestId('offline-data-row')).toHaveTextContent(/of 500\.0 MB/);
+    expect(getByTestId('offline-data-row')).not.toHaveTextContent(/2\.4 GB/);
+  });
+
+  // It REPORTS and does not manage - nothing in this app prunes that cache on request, so the row
+  // is not a button and must never become one by accident.
+  it('offers no action on the offline row, because there is none to offer', async () => {
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('offline-data-row')).toBeTruthy());
+    expect(getByTestId('offline-data-row').props.accessibilityRole).toBeUndefined();
+  });
+
+  // Nothing was dropped in the regrouping (ADR-085: a drawing does not remove reviewed working
+  // capability). These three have no place in the CRM drawing and are all still here.
+  it('keeps every row the drawing does not draw', async () => {
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-version')).toBeTruthy());
+    expect(getByTestId('change-pin-row')).toBeTruthy();
+    expect(getByTestId('theme-row')).toBeTruthy();
+  });
+
+  // ── SYSTEM PERMISSIONS — the one role-conditional block on this screen (PO 2026-09-10) ────────
+  //
+  // One screen serves all twelve roles, so the risk a test has to hold is in BOTH directions: the
+  // block must appear for VIEWER and must not appear for anyone else. Rendering it for every role
+  // would tell eleven of them their access is read-only, which is false for all eleven.
+
+  it('draws no System Permissions block for a role that is not the Viewer', async () => {
+    useAuthStore.setState({ role: CosRole.CRM_SALES_MANAGER } as never);
+
+    const { queryByTestId, getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toBeTruthy());
+    expect(queryByTestId('permissions-section')).toBeNull();
+  });
+
+  it('draws the three READ ONLY permission tiles for the Viewer', async () => {
+    useAuthStore.setState({ role: CosRole.VIEWER } as never);
+
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('permissions-section')).toBeTruthy());
+    for (const tile of VIEWER_PERMISSION_TILES.value) {
+      expect(getByTestId(`permission-tile-${tile.key}`)).toHaveTextContent(/read only/i);
+    }
+  });
+
+  it('still shows the Viewer every row the other eleven roles get', async () => {
+    useAuthStore.setState({ role: CosRole.VIEWER } as never);
+
+    const { getByTestId } = await renderCard();
+
+    // E2 = A: the block is ADDED for this role, and nothing is taken away for it. A per-role
+    // layout was the option the product owner declined.
+    await waitFor(() => expect(getByTestId('permissions-section')).toBeTruthy());
+    expect(getByTestId('profile-mfa-row')).toBeTruthy();
+    expect(getByTestId('change-pin-row')).toBeTruthy();
+    expect(getByTestId('theme-row')).toBeTruthy();
+    expect(getByTestId('profile-version')).toBeTruthy();
+  });
+});
+
+describe('AccountSettings - security & access', () => {
+  let setEnabled: jest.Mock;
+  let alert: jest.SpyInstance;
+
+  beforeEach(() => {
+    setEnabled = jest.fn().mockResolvedValue(undefined);
+    useBiometricStore.setState({ available: true, enabled: false, setEnabled } as never);
+    useThemeStore.setState({ mode: 'dark', setMode: jest.fn() } as never);
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    users.getMe.mockReset();
+    users.getMe.mockResolvedValue(ME);
+    users.requestMyPasswordResetEmail.mockReset();
+    users.requestMyPasswordResetEmail.mockResolvedValue({ email: 'v@example.com' });
+    useAuthStore.setState({ displayName: 'Vorawee S.', userId: 'u-1111-aaaa' } as never);
+    useLocaleStore.setState({ locale: 'en' } as never);
+  });
+
+  afterEach(() => alert.mockRestore());
+
+  // ── Security & Access: the Password row (Stitch 63c6dcca…, ADR-104) ───────────────────────────
+
+  describe('Password row', () => {
+    it('offers it on a Path B account — one with an email and a real credential', async () => {
+      const { getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('password-row')).toBeTruthy());
+    });
+
+    // ABSENT, NOT DISABLED. There is no password on this account and there never will be, so a
+    // control that looks like it could be enabled is a promise the product cannot keep.
+    it('does not draw it at all on a Path A account', async () => {
+      users.getMe.mockResolvedValue(PATH_A_ME);
+
+      const { queryByTestId, getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('biometric-row')).toBeTruthy());
+      expect(queryByTestId('password-row')).toBeNull();
+    });
+
+    // An unanswered fetch is not a Path B account. Offering a reset before the path is known would
+    // mean offering it to a phone-only user who cannot use it.
+    it('does not draw it while the fetch is still out, or after it failed', async () => {
+      users.getMe.mockRejectedValue(new Error('offline'));
+
+      const { queryByTestId, getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('biometric-row')).toBeTruthy());
+      expect(queryByTestId('password-row')).toBeNull();
+    });
+
+    it('asks for the email link and reports where it went', async () => {
+      const { getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('password-row-action')).toBeTruthy());
+      await fireEvent.press(getByTestId('password-row-action'));
+
+      await waitFor(() => expect(users.requestMyPasswordResetEmail).toHaveBeenCalled());
+      await waitFor(() => expect(alert).toHaveBeenCalled());
+      expect(String(alert.mock.calls.at(-1))).toContain('v@example.com');
+    });
+
+    // A second action token invalidates the first, so a double tap would hand the user a link that
+    // is already dead. The control refuses the second press rather than racing.
+    it('ignores a second press while the first request is in flight', async () => {
+      let release: (value: { email: string }) => void = () => undefined;
+      users.requestMyPasswordResetEmail.mockReturnValue(
+        new Promise<{ email: string }>((resolve) => {
+          release = resolve;
+        }),
+      );
+
+      const { getByTestId } = await renderCard();
+      await waitFor(() => expect(getByTestId('password-row-action')).toBeTruthy());
+
+      await fireEvent.press(getByTestId('password-row-action'));
+      await fireEvent.press(getByTestId('password-row-action'));
+
+      expect(users.requestMyPasswordResetEmail).toHaveBeenCalledTimes(1);
+      release({ email: 'v@example.com' });
+      await waitFor(() => expect(alert).toHaveBeenCalled());
+    });
+
+    it('says the link could not be sent rather than claiming it was', async () => {
+      users.requestMyPasswordResetEmail.mockRejectedValue(new Error('COS-AUTH-003'));
+
+      const { getByTestId } = await renderCard();
+      await waitFor(() => expect(getByTestId('password-row-action')).toBeTruthy());
+      await fireEvent.press(getByTestId('password-row-action'));
+
+      await waitFor(() => expect(alert).toHaveBeenCalled());
+      expect(String(alert.mock.calls.at(-1))).toMatch(/could not be sent/i);
+    });
+
+    // NULL IS THE ORDINARY CASE and will stay so: the reset finishes inside Keycloak and calls
+    // nothing back, so only an admin temporary reset ever stamps the column. "Never" would be a
+    // claim about the password; the truth is only that this service has not observed a change.
+    it('prints no last-changed line when the column has never been stamped', async () => {
+      const { getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('password-row')).toBeTruthy());
+      expect(getByTestId('password-row')).not.toHaveTextContent(/last changed|never/i);
+    });
+
+    it('prints the date when the column carries one', async () => {
+      users.getMe.mockResolvedValue({ ...ME, password_changed_at: '2026-07-04T09:30:00.000Z' });
+
+      const { getByTestId } = await renderCard();
+
+      await waitFor(() => expect(getByTestId('password-row')).toHaveTextContent(/Last changed/));
+      expect(getByTestId('password-row')).toHaveTextContent(/2026/);
+    });
+  });
+
+  // ── Security & Access: the moved rows ─────────────────────────────────────────────────────────
+
+  it('states the second factor as a status line, and marks an enrolled one with a tick', async () => {
+    const { getByTestId } = await renderCard();
+
+    await waitFor(() => expect(getByTestId('profile-mfa-row')).toHaveTextContent(/Status:/));
+    expect(getByTestId('profile-mfa-row')).toHaveTextContent(/MFA active/);
+  });
+
+  // THE DEVICE'S ANSWER, not the tap — the sentence `/account-security` used to make with an
+  // InfoCard, carried across with the switch rather than lost with it (ADR-085).
+  it('says so when the device refused the lock, instead of showing it as on', async () => {
+    setEnabled.mockResolvedValue(false);
+
+    const { getByTestId } = await renderCard();
+
+    await fireEvent(getByTestId('biometric-row-switch'), 'valueChange', true);
+
+    await waitFor(() =>
+      expect(getByTestId('biometric-row')).toHaveTextContent(/unlock|biometric|device/i),
+    );
+  });
+
+  it('says nothing about a refusal when switching the lock OFF', async () => {
+    setEnabled.mockResolvedValue(false);
+    useBiometricStore.setState({ available: true, enabled: true, setEnabled } as never);
+
+    const { getByTestId } = await renderCard();
+
+    await fireEvent(getByTestId('biometric-row-switch'), 'valueChange', false);
+
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith(false));
+    expect(getByTestId('biometric-row')).not.toHaveTextContent(/unlock|device/i);
+  });
+
+  // E4 — every control saves on change, so the drawing's fixed footer would be a button that does
+  // nothing, and worse, would teach that nothing else had taken effect until it was pressed.
+  it('carries no SAVE bar', async () => {
+    const { queryByText } = await renderCard();
+
+    expect(queryByText(/save changes/i)).toBeNull();
+  });
+});

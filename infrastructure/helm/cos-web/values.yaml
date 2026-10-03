@@ -1,0 +1,100 @@
+replicaCount: 2
+
+image:
+  repository: ''
+  tag: 'latest'
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: false
+  className: 'kong'
+  host: ''
+  tlsSecretName: 'cos-tls'
+
+resources:
+  requests:
+    cpu: '100m'
+    memory: '256Mi'
+  limits:
+    cpu: '500m'
+    memory: '512Mi'
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+env:
+  NODE_ENV: 'production'
+  PORT: '3000'
+  NEXT_TELEMETRY_DISABLED: '1'
+
+envFrom:
+  - secretRef:
+      name: cos-web-secrets
+
+serviceAccount:
+  create: true
+  name: 'cos-web'
+
+nodeSelector: {}
+tolerations: []
+affinity:
+  # master:4650-4654 — schedule onto the pool this workload is sized for. Terraform labels each
+  # managed node group `workload=<pool>` (infrastructure/terraform/aws/modules/eks/modules).
+  #
+  # REQUIRED, not preferred: a "preferred" rule silently falls back to any node the moment the pool
+  # is full or missing, which is the failure this exists to prevent — an AI service quietly running
+  # on a t3.xlarge behaves, just slowly, and nothing reports it.
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: workload
+              operator: In
+              values: ['app']
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cos-web
+          topologyKey: kubernetes.io/hostname
+
+# /health/live + /health/ready are served by src/app/health/*/route.ts and are excluded from the
+# auth matcher in src/middleware.ts. This probed /api/health — a route that does not exist — and
+# next-auth answered 307 to the sign-in page; Kubernetes counts 2xx/3xx as success, so the probe
+# passed unconditionally and a wedged pod would never be restarted. ADR-039 listed these as
+# UNVERIFIED. Guarded by src/app/health/__tests__/health-routes.spec.ts.
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 3000
+  initialDelaySeconds: 15
+  periodSeconds: 5
+
+# Rolling deployment — master §Phase 17: surge by one, never go unavailable. maxUnavailable MUST
+# stay 0: any other value trades zero-downtime for a faster rollout, which is the opposite of what
+# the spec chose. Overridable per environment, but prod must not relax it.
+strategy:
+  type: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0

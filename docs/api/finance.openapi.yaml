@@ -1,0 +1,924 @@
+openapi: 3.1.0
+info:
+  title: Finance Service API
+  version: 1.0.0
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Phase 7 — Project cost tracking service.
+
+    Tracks budget vs actual vs committed. Does NOT implement accounting or ERP posting.
+
+    **Reviewed 2026-08-31** against `backend/src/modules/finance/` at the origin/develop merge. The
+    controller changed only where the package restructure moved `JwtAuthGuard` to `shared/`; no DTO
+    changed. Service and consumer changes are internal — the transactional outbox and the CLS tenant
+    context the consumer now enters. No route, parameter, request body or response shape moved. This
+    line records the comparison the freshness gate asks for, which compares commit timestamps and
+    cannot tell an import move from an API change. Re-checked after the conformance follow-up, which
+    renamed one SQL alias inside `resolveBudgetLine` (`matched` to `matched_count`, so the Decimal
+    guard can tell a count from an amount). That column is never returned to a caller.
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+tags:
+  - name: finance
+    description: Budget, cost tracking, payments, variance reporting
+paths:
+  # ── Contract lifecycle and payment approval (ADR-058) ─────────────────────
+  # Written 2026-08-24. All eight were canonical in §14 Financial APIs and carried by no document.
+  /finance/payments/{paymentId}/approve:
+    patch:
+      summary: Approve a pending payment (PENDING → PROCESSED)
+      operationId: approvePayment
+      tags: [payments]
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The payment after approval
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — FINANCE or TENANT_ADMIN
+        '404':
+          description: No such payment in this tenant
+        '422':
+          description: Not in PENDING state
+
+  /finance/contracts/{id}/document:
+    post:
+      summary: Attach the contract document
+      description: |
+        Two modes (ADR-058 CT-2c-3). `upload` references a document already in the File Service and
+        requires `file_id`; `generate` builds the PDF in-app from the contract, the BOQ snapshot and
+        the terms, and takes no file. The document's SHA-256 is what a later signature binds to, so
+        replacing it after signing is not an amendment — it is a different contract.
+      operationId: attachContractDocument
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [upload, generate]
+                file_id:
+                  type: string
+                  format: uuid
+                  description: Required when `mode` is `upload`; rejected otherwise.
+      responses:
+        '201':
+          description: Document attached
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such contract in this tenant
+        '422':
+          description: Contract is not in a state that accepts a document
+
+  /finance/contracts/{id}/sign:
+    post:
+      summary: Contractor-side signature (PKI / verifiable credential)
+      description: |
+        Binds the document's SHA-256, not the contract row — a signature that did not name the
+        bytes it signed would survive the document being swapped. The caller's IP is recorded on
+        the signature as part of the audit trail.
+      operationId: signContract
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Signature recorded
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such contract in this tenant
+        '422':
+          description: No document attached, or already signed by this side
+
+  /finance/contracts/{id}/sign-links:
+    post:
+      summary: Issue a single-use magic link for the client to sign
+      description: |
+        The client has no account. The link authenticates them on its own for exactly one
+        signature — see `POST /finance/contracts/sign/{token}`.
+      operationId: issueContractSignLink
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client_name:
+                  type: string
+                  description: Shown on the signing page.
+                client_email:
+                  type: string
+                  format: email
+      responses:
+        '201':
+          description: Link issued
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such contract in this tenant
+
+  /finance/contracts/sign/{token}:
+    post:
+      summary: An external client signs via magic link
+      description: |
+        **PUBLIC — no bearer token, and deliberately outside the tenant middleware.** The signer has
+        no account at all; the guard takes the tenant from the token's own signed claim, so the
+        write still runs under RLS. Single use: a replayed link is refused rather than recording a
+        second signature.
+      operationId: signContractAsClient
+      tags: [contracts]
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+          description: The single-use contract-signing token from the magic link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client_name: { type: string }
+                client_email: { type: string, format: email }
+      responses:
+        '201':
+          description: Client signature recorded
+        '401':
+          description: Bad signature, expired, or already used
+
+  /finance/contracts/{id}/signatures:
+    get:
+      summary: Signature audit trail for a contract
+      description: Every signature recorded against the contract, in order, with who and from where.
+      operationId: listContractSignatures
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The signature trail
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: No such contract in this tenant
+
+  /finance/contracts/{id}/activate:
+    post:
+      summary: Put a fully-signed contract into force (SIGNED → ACTIVE)
+      operationId: activateContract
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Contract activated
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — PM or TENANT_ADMIN
+        '404':
+          description: No such contract in this tenant
+        '422':
+          description: Not fully signed, or not in SIGNED state
+
+  /finance/contracts/{id}/terminate:
+    post:
+      summary: Terminate a contract (SIGNED | ACTIVE → TERMINATED)
+      operationId: terminateContract
+      tags: [contracts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Contract terminated
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — PM or TENANT_ADMIN
+        '404':
+          description: No such contract in this tenant
+        '422':
+          description: Not in a terminable state
+  /finance/budget/{projectId}:
+    get:
+      description: |
+        VIEWER may call this since 2026-09-11 (ADR-103). The role has read on this module in §6.8 and every GET here answered 403 for it until then; the six routes its own screens read were opened per-route rather than by widening the shared READ_ROLES constant, which 24 other handlers use.
+      operationId: getFinanceBudgetByProjectid
+      tags:
+        - finance
+      summary: Budget detail with lines
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: >-
+            The project budget, its allocation lines, and the variance between what was allocated
+            and what has been committed plus spent. Schema documented 2026-09-08 (the endpoint is
+            unchanged; only the description was a bare line before) because the mobile budget screen
+            reads it: `lines` carry an ALLOCATION and no actual, which is why a category's spend has
+            to come from `/finance/cost-transactions` grouped by `budget_line_id`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget:
+                    type: object
+                    properties:
+                      budget_id:
+                        type: string
+                        format: uuid
+                      project_id:
+                        type: string
+                        format: uuid
+                      total_budget_amount:
+                        type: string
+                        description: DECIMAL string
+                      total_budget_currency:
+                        type: string
+                        example: THB
+                      allocated_amount:
+                        type: string
+                        description: DECIMAL string - the sum of the lines below
+                      committed_amount:
+                        type: string
+                        description: DECIMAL string
+                      actual_amount:
+                        type: string
+                        description: DECIMAL string
+                      variance_alert_threshold:
+                        type: string
+                        description: DECIMAL string
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        line_id:
+                          type: string
+                          format: uuid
+                        budget_id:
+                          type: string
+                          format: uuid
+                        project_id:
+                          type: string
+                          format: uuid
+                        line_name:
+                          type: string
+                        allocated_amount:
+                          type: string
+                          description: DECIMAL string. There is no actual on a line.
+                        currency_code:
+                          type: string
+                          example: THB
+                        boq_category_id:
+                          type: [string, 'null']
+                          format: uuid
+                          description: >-
+                            Foreign key to the BOQ category. It is a UUID, not a short cost code -
+                            no code column exists anywhere in the schema.
+                  variance_percentage:
+                    type: string
+                    description: DECIMAL string - (actual + committed - allocated) / allocated x 100
+        '404':
+          description: No budget has been set for this project
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postFinanceBudgetByProjectid
+      tags:
+        - finance
+      summary: Create or update project budget
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - total_budget_amount
+                - total_budget_currency
+              properties:
+                total_budget_amount:
+                  type: string
+                  description: DECIMAL string
+                total_budget_currency:
+                  type: string
+                  example: THB
+                variance_alert_threshold:
+                  type: number
+                  minimum: 1
+                  maximum: 100
+      responses:
+        '201':
+          description: Budget created or updated
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/budget/{projectId}/lines:
+    post:
+      operationId: postFinanceBudgetByProjectidLines
+      tags:
+        - finance
+      summary: Add a budget line
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - line_name
+                - allocated_amount
+                - currency_code
+              properties:
+                line_name:
+                  type: string
+                allocated_amount:
+                  type: string
+                  description: DECIMAL string
+                currency_code:
+                  type: string
+                  example: THB
+                boq_category_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Budget line added
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/cost-transactions:
+    get:
+      description: |
+        VIEWER may call this since 2026-09-11 (ADR-103). The role has read on this module in §6.8 and every GET here answered 403 for it until then; the six routes its own screens read were opened per-route rather than by widening the shared READ_ROLES constant, which 24 other handlers use.
+      operationId: getFinanceCostTransactions
+      tags:
+        - finance
+      summary: List cost transactions (paginated)
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: >-
+            One page of recorded costs, ordered `transaction_date DESC, recorded_at DESC`. Schema
+            documented 2026-09-08 because the mobile budget screen sums these by `budget_line_id`
+            to get a category's spend - `finance.budget_lines` carries only an allocation. A caller
+            doing that MUST walk every page: a sum over page one is a sum over the most recent
+            rows, which understates every category.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        transaction_id:
+                          type: string
+                          format: uuid
+                        project_id:
+                          type: string
+                          format: uuid
+                        source_type:
+                          type: string
+                          enum: [PURCHASE_ORDER, INVOICE, ADJUSTMENT]
+                        source_id:
+                          type: string
+                          format: uuid
+                        budget_line_id:
+                          type: [string, 'null']
+                          format: uuid
+                          description: >-
+                            Set by `resolveBudgetLine` when a source's BOQ items map to a line;
+                            null when none of them do. Such a cost belongs to the project total
+                            and to no category.
+                        amount:
+                          type: string
+                          description: DECIMAL string
+                        currency_code:
+                          type: string
+                          example: THB
+                        transaction_date:
+                          type: string
+                          format: date
+                        description:
+                          type: [string, 'null']
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/payments:
+    get:
+      operationId: getFinancePayments
+      tags:
+        - finance
+      summary: List payments across the tenant (filterable by project and status)
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Filter by payment status. Added 2026-08-11 as an optional param (additive, so no version
+            bump per QM-2) so a caller can COUNT one status via the response `total` instead of
+            filtering the first page of 20.
+          schema:
+            type: string
+            enum: [PENDING, PROCESSED, FAILED]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: >-
+            Payments list — the payment's own columns and nothing else. A payment names its invoice
+            by `invoice_id` only: finance may not query `procurement.*` (master PHASE 7 line 3216),
+            so a caller that needs the vendor's name or the invoice number reads
+            `GET /procurement/vendor-invoices`, which carries both, and matches on `invoice_id`.
+            A join here was written on 2026-09-08 and reverted the same day for that reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        payment_id:
+                          type: string
+                          format: uuid
+                        invoice_id:
+                          type: string
+                          format: uuid
+                        project_id:
+                          type: string
+                          format: uuid
+                        amount:
+                          type: string
+                          description: DECIMAL string
+                        currency_code:
+                          type: string
+                          example: THB
+                        payment_date:
+                          type: string
+                          format: date
+                        payment_reference:
+                          type: [string, 'null']
+                        status:
+                          type: string
+                          enum: [PENDING, PROCESSED, FAILED]
+                  total:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postFinancePayments
+      tags:
+        - finance
+      summary: Record a payment against an invoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - project_id
+                - invoice_id
+                - amount
+                - currency_code
+                - payment_date
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                  description: Project this payment belongs to
+                invoice_id:
+                  type: string
+                  format: uuid
+                amount:
+                  type: string
+                  description: DECIMAL string
+                currency_code:
+                  type: string
+                  example: THB
+                payment_date:
+                  type: string
+                  format: date
+                payment_reference:
+                  type: string
+      responses:
+        '201':
+          description: Payment recorded
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/reports/variance:
+    get:
+      operationId: getFinanceReportsVariance
+      tags:
+        - finance
+      summary: Budget variance report across all projects
+      responses:
+        '200':
+          description: Variance report
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/customers:
+    post:
+      operationId: postFinanceCustomers
+      tags:
+        - finance
+      summary: Register a client/customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - company_name
+              properties:
+                company_name:
+                  type: string
+                customer_type:
+                  type: string
+                opportunity_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Customer created
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    get:
+      operationId: getFinanceCustomers
+      tags:
+        - finance
+      summary: List customers
+      responses:
+        '200':
+          description: Customer list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/contracts:
+    post:
+      operationId: postFinanceContracts
+      tags:
+        - finance
+      summary: Create a contract (client-side or vendor-side)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - project_id
+                - contract_type
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                contract_type:
+                  type: string
+                  enum:
+                    - MAIN_CONTRACT
+                    - SUBCONTRACT
+                    - SUPPLY_AGREEMENT
+                contract_value:
+                  type: string
+                  description: DECIMAL string
+                customer_id:
+                  type: string
+                  format: uuid
+                vendor_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Contract created
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    get:
+      operationId: getFinanceContracts
+      tags:
+        - finance
+      summary: List contracts (filterable by project)
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Contract list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/billing:
+    post:
+      operationId: postFinanceBilling
+      tags:
+        - finance
+      summary: Create a client billing (AR) invoice in DRAFT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - project_id
+                - contract_id
+                - billing_number
+                - amount
+                - due_date
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                contract_id:
+                  type: string
+                  format: uuid
+                billing_number:
+                  type: string
+                amount:
+                  type: string
+                  description: DECIMAL string
+                due_date:
+                  type: string
+                  format: date
+      responses:
+        '201':
+          description: Billing created (DRAFT)
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    get:
+      operationId: getFinanceBilling
+      tags:
+        - finance
+      summary: List client billings (filterable by project and status)
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - DRAFT
+              - ISSUED
+              - PAID
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Billing list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/billing/{billingId}:
+    get:
+      operationId: getFinanceBillingByBillingid
+      tags:
+        - finance
+      summary: Get a single client billing
+      parameters:
+        - name: billingId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Billing
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/billing/{billingId}/approve:
+    patch:
+      operationId: patchFinanceBillingByBillingidApprove
+      tags:
+        - finance
+      summary: Approve a client billing (PM up to limit; Executive above)
+      parameters:
+        - name: billingId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tier
+              properties:
+                tier:
+                  type: string
+                  enum:
+                    - PM
+                    - EXECUTIVE
+                    - TENANT_ADMIN
+      responses:
+        '200':
+          description: Billing approved (DRAFT → ISSUED)
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/ar-receipts:
+    post:
+      operationId: postFinanceArReceipts
+      tags:
+        - finance
+      summary: Record a client payment (AR receipt) against an ISSUED billing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - project_id
+                - billing_id
+                - customer_id
+                - amount_received
+                - received_date
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                billing_id:
+                  type: string
+                  format: uuid
+                customer_id:
+                  type: string
+                  format: uuid
+                amount_received:
+                  type: string
+                  description: DECIMAL string
+                received_date:
+                  type: string
+                  format: date
+                payment_method:
+                  type: string
+                payment_reference:
+                  type: string
+      responses:
+        '201':
+          description: AR receipt recorded (billing → PAID)
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /finance/cashflow-forecast/{projectId}:
+    get:
+      description: |
+        VIEWER may call this since 2026-09-11 (ADR-103). The role has read on this module in §6.8 and every GET here answered 403 for it until then; the six routes its own screens read were opened per-route rather than by widening the shared READ_ROLES constant, which 24 other handlers use.
+      operationId: getFinanceCashflowForecastByProjectid
+      tags:
+        - finance
+      summary: 13-week direct-method cash flow forecast for a project
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Weekly forecast periods (inflow, outflow, net, cumulative)
+        '401':
+          description: Unauthenticated — missing or invalid bearer token

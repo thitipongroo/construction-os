@@ -1,0 +1,210 @@
+# Construction OS — project-specific static rules (ADR-011).
+#
+# These encode prohibitions that context.md §GLOBAL EXECUTION RULES "Never" already states but that
+# nothing mechanically enforced: until now they lived only in a document and in reviewer memory.
+# Each rule below cites the line it comes from.
+#
+# Deliberately hand-written rather than pulled from the Semgrep registry. Semgrep's own rules moved
+# to a proprietary "Semgrep Rules License" in Dec 2024 — internal business use (scanning your own
+# code) is permitted, but rules from third-party registries carry their own licences (e.g. AGPL-3.0
+# for Trail of Bits). Rules in this file are ours, so no licence question arises, and they encode
+# domain knowledge no generic ruleset has. The engine itself is LGPL-2.1.
+#
+# Run locally:  semgrep --config .semgrep/
+
+rules:
+  # ── AI layer ───────────────────────────────────────────────────────────────
+  - id: cos-no-direct-openai-sdk
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Call the LLM through the LLMProvider interface, never the OpenAI SDK directly.
+      context.md §Never: "Call OpenAI SDK directly — always via LLMProvider interface".
+      Direct SDK use defeats the provider swap that ADR/§22.6 depends on (Claude / Ollama fallback)
+      and bypasses token logging, which is what per-tenant AI billing meters from (§26.1).
+    paths:
+      exclude:
+        - '**/providers/llm_provider.py'
+        - '**/providers/alternative_llm_provider.py'
+        - '**/providers/embedding_provider.py'
+        # The ONE implementation of EmbeddingProvider lives here since ADR-021 — each service's
+        # providers/embedding_provider.py now just re-exports it, so the exclusion above stopped
+        # covering the file it was written for. Surfaced only when the rule started parsing again:
+        # while cos-no-direct-openai-sdk was a parse error the whole scan aborted, so this had never
+        # been evaluated.
+        - '**/libs/python/cosembedding/**'
+        - '**/tests/**'
+        - '**/test_*.py'
+    # `from openai import ...` was rejected outright by semgrep-core from some version before
+    # 1.175.0: "Invalid pattern for Python: Stdlib.Parsing.Parse_error". An ellipsis is not valid in
+    # an import list; `$X` is the metavariable form and matches every imported name. The rule had not
+    # changed since 2026-07-23 — the workflow runs `image: semgrep/semgrep` with no tag, so a new
+    # release turned a working rule into a hard failure, and the whole scan aborted with it.
+    pattern-either:
+      - pattern: from openai import $X
+      - pattern: import openai
+
+  # ── Financial precision ────────────────────────────────────────────────────
+  - id: cos-no-float-for-money
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Never use float for monetary values — use Python's Decimal (context.md §Never; FINANCIAL
+      PRECISION SPEC). Binary floats cannot represent decimal currency exactly, so totals drift by
+      fractions of a satang per operation and reconciliation fails in ways that are very hard to
+      trace back to their cause.
+    paths:
+      exclude:
+        - '**/tests/**'
+        - '**/test_*.py'
+    # Regex rather than a semantic pattern: `float(x)` alone is far too broad (durations, ratios,
+    # confidence scores all legitimately use it). Matching only money-named identifiers keeps the
+    # signal high — it will miss a badly-named variable, which is the right trade for a blocking rule.
+    pattern-regex: (?i)float\(\s*[a-z_.]*(amount|price|total|cost|budget|balance|payment|invoice)[a-z_.]*\s*\)
+
+  # ── Logging ────────────────────────────────────────────────────────────────
+  - id: cos-no-console-log
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      Use the platform logger (@cos/logger), not console.log — context.md §Never and QM-8.
+      console output carries no trace_id / tenant_id / module fields, so it cannot be correlated in
+      Loki and is invisible to the observability stack the platform is gated on.
+    paths:
+      exclude:
+        - '**/*.spec.ts'
+        - '**/*.test.ts'
+        - '**/__tests__/**'
+        - '**/scripts/**'
+        - '**/*.config.ts'
+        - '**/*.config.js'
+        # Same suffix idiom as *.config.ts above. A `*.script.ts` is a CLI entry point run by hand
+        # (`pnpm --filter backend run reconcile:contracts`); its console output IS the deliverable,
+        # and structured JSON logging would make a dry-run report unreadable to the operator who
+        # asked for it. `**/scripts/**` below only covers the directory, not the suffix.
+        - '**/*.script.ts'
+        # Standalone operational scripts (e.g. the tenant-isolation probe CronJob) print to stdout
+        # by design — that IS their output contract, and @cos/logger is not available to them.
+        - 'infrastructure/**'
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.debug(...)
+
+  # ── Security ───────────────────────────────────────────────────────────────
+  - id: cos-no-wildcard-cors
+    languages: [typescript, javascript, python]
+    severity: ERROR
+    message: >-
+      Never return Access-Control-Allow-Origin: * (context.md §Never; QM-4). Allowed origins are
+      declared per environment in docs/policies/cors-policy.md. A wildcard on a multi-tenant API
+      lets any site drive an authenticated browser session against another tenant's data.
+    pattern-either:
+      - pattern: |
+          "Access-Control-Allow-Origin": "*"
+      - pattern: |
+          'Access-Control-Allow-Origin': '*'
+      - pattern: |
+          origin: '*'
+      - pattern: |
+          allow_origins=["*"]
+
+  - id: cos-no-weak-tls
+    languages: [typescript, javascript, python, yaml]
+    severity: ERROR
+    message: >-
+      TLS 1.3 is the minimum on every ingress endpoint (context.md §Never; QM-4, master §Phase 16).
+      TLS 1.0/1.1/1.2 must not be enabled anywhere.
+    paths:
+      exclude:
+        # Rule definitions describe the pattern they hunt for, so they always self-match.
+        - '.semgrep/**'
+    # The explicit minor versions matter: an earlier `TLSv1(\.[012])?\b` also matched the "TLSv1"
+    # prefix inside "TLSv1.3" and flagged infrastructure/kubernetes/cert-manager, which is correctly
+    # configured. A rule that fails the compliant config is worse than no rule.
+    pattern-regex: (TLSv1\.[012]\b|tls_version\s*=\s*["']?1\.[012]\b)
+
+  # ── Multi-tenant isolation ─────────────────────────────────────────────────
+  - id: cos-sql-must-be-schema-qualified
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Raw SQL must name tables schema-qualified (e.g. platform.outbox_events, projects.projects).
+      An unqualified name resolves through search_path, which nothing in this application sets, so
+      the statement may silently address a different table than the one intended.
+      QM-4 / spec §11.0 rule 2.
+    #
+    # Scoped to the raw-SQL call node, not the file. That scoping is what makes it trustworthy:
+    # an earlier regex-over-the-file version flagged a source COMMENT mentioning $queryRaw and
+    # reported the line the template literal opened on rather than the offending statement. This
+    # version reports the statement line, and prose can no longer trigger it.
+    #
+    # The qualified/unqualified distinction is positional, so no lookbehind is needed: in
+    # `platform.outbox_events` the identifier after INTO is followed by `.`, while an unqualified
+    # name is followed by whitespace or a delimiter. Only the latter matches.
+    # The negative lookahead excludes SQL keywords that legitimately follow these words without
+    # being table names — chiefly `ON CONFLICT ... DO UPDATE SET`, a real construct in this repo.
+    patterns:
+      # One metavariable for the whole tag, not `$X.$METHOD`. Semgrep does not parse
+      # `tx.$queryRaw<TaskRow[]>` as a generic call — it reads `<` as less-than — so the two-part
+      # pattern matched none of the fourteen typed calls in tasks.repository.ts. The rule reported
+      # a clean 0 there while checking nothing. That gap stayed invisible until the identical
+      # ruleset was run under Opengrep, which does parse them: same rules, same repo, Semgrep 0
+      # findings and Opengrep 6. With the binding below both engines agree on every case tested.
+      - pattern: $F`...`
+      - metavariable-regex:
+          metavariable: $F
+          # Anchored: Semgrep full-matches metavariable-regex rather than searching, hence the
+          # surrounding `.*`, and (?s) because the bound text spans newlines.
+          regex: '(?s).*\$(queryRaw|executeRaw).*'
+      # DML targets only — deliberately NOT FROM/JOIN. Including them produced six false positives
+      # in tasks.repository.ts, every one a CTE name (`FROM scoped`, `FROM dated`); a regex cannot
+      # tell a CTE from a table, while a DML target is never one. The cost is real and accepted: an
+      # unqualified table read by a plain SELECT is not caught.
+      # Anchored per LINE, with a prefix that cannot cross a `--`: the bound text is the whole
+      # template, so without this a SQL COMMENT is scanned as SQL. `-- Every UPDATE here must
+      # set this` in tasks.repository.ts was reported as an unqualified table on a statement
+      # whose target is `projects.tasks`. `\K` drops the prefix so the finding still points at
+      # the statement.
+      # `OF` is excluded for the row-lock clause `FOR UPDATE OF <alias>`: `FOR UPDATE OF s` in
+      # platform-settings.service.ts was reported as an unqualified UPDATE target on a SELECT whose
+      # table is `platform.platform_settings` (Semgrep run on 8399cd68, 2026-09-15). The alias names
+      # a FROM item, never a DML target.
+      - pattern-regex: '(?m)^(?:[^\n-]|-(?!-))*\K\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?!(?i:SET|SELECT|ONLY|OF)\b)[a-zA-Z_][a-zA-Z0-9_]*[\s\n(),;]'
+
+  # ── Deprecated / removed technology ────────────────────────────────────────
+  - id: cos-no-watermelondb
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      WatermelonDB was removed — the offline DB is Drizzle ORM on expo-sqlite (spec 17 §17.10 /
+      ADR-048). context.md §Never forbids reintroducing it or its native wiring; it cost a
+      seven-layer native integration fix (R-01) before being replaced.
+    # Same parse failure as cos-no-direct-openai-sdk above, same cause. `import ... from` does not
+    # parse; each import FORM needs its own pattern. All four verified against real samples — named
+    # `{ Database }`, default, namespace `* as`, and require() — because dropping one would leave the
+    # ban enforceable only against the spelling nobody uses.
+    pattern-either:
+      - pattern: import { ... } from '@nozbe/watermelondb'
+      - pattern: import $X from '@nozbe/watermelondb'
+      - pattern: import * as $X from '@nozbe/watermelondb'
+      - pattern: require('@nozbe/watermelondb')
+
+  - id: cos-no-indexeddb-in-react-native
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      IndexedDB is a browser API and does not exist in React Native (context.md §Never).
+      apps/mobile uses Drizzle on expo-sqlite; apps/web uses IndexedDB via idb.
+    paths:
+      include:
+        - 'apps/mobile/**'
+    pattern-either:
+      - pattern: indexedDB
+      - pattern: window.indexedDB
+
+  - id: cos-no-bigquery-or-snowflake
+    languages: [typescript, javascript, python]
+    severity: ERROR
+    message: >-
+      Analytics uses ClickHouse only — context.md §Never forbids BigQuery and Snowflake.
+    pattern-regex: (?i)(from|import|require).{0,40}(bigquery|snowflake)

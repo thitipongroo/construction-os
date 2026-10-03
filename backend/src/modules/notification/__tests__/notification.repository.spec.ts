@@ -1,0 +1,554 @@
+// Unit tests — Notification Repository (Phase 20)
+// The mock calls the callback so SQL template-literal lambdas are covered.
+
+// PrismaClient is instantiated as a class field at construction time.
+// Mock @prisma/client so the constructor doesn't require a real DATABASE_URL.
+jest.mock('@prisma/client', () => ({
+  PrismaClient: jest.fn(),
+}));
+
+import { PrismaClient } from '@prisma/client';
+import { NotificationRepository } from '../notification.repository';
+
+// The db.run mock actually executes the callback with mockTx,
+// so every (tx) => tx.$queryRaw`...` lambda is exercised.
+const mockQueryRaw = jest.fn();
+const mockExecuteRaw = jest.fn();
+const mockTx = { $queryRaw: mockQueryRaw, $executeRaw: mockExecuteRaw };
+const mockRun = jest.fn();
+const mockDb = { run: mockRun };
+
+const mockPlatformQueryRaw = jest.fn();
+const mockPlatformExecuteRaw = jest.fn();
+const mockPrismaTransaction = jest.fn();
+
+let repo: NotificationRepository;
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  // Re-establish db.run implementation after resetAllMocks clears it
+  mockRun.mockImplementation((_tenantId: string, fn: (tx: typeof mockTx) => unknown) => fn(mockTx));
+  // Re-establish platformPrisma.$transaction after resetAllMocks clears it
+  mockPrismaTransaction.mockImplementation(
+    (fn: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+      fn({ $queryRaw: mockPlatformQueryRaw, $executeRaw: mockPlatformExecuteRaw }),
+  );
+  (PrismaClient as jest.Mock).mockImplementation(() => ({
+    $transaction: mockPrismaTransaction,
+    $disconnect: jest.fn().mockResolvedValue(undefined),
+  }));
+  repo = new NotificationRepository(mockDb as never);
+});
+
+// ── findTemplate ────────────────────────────────────────────────────────────
+
+describe('findTemplate', () => {
+  it('returns first row when template found', async () => {
+    const row = {
+      template_id: 't1',
+      tenant_id: null,
+      event_type: 'site.inspection.failed.v1',
+      channel: 'IN_APP',
+      subject_template: 'Alert',
+      body_template: 'Body',
+      is_active: true,
+    };
+    mockQueryRaw.mockResolvedValueOnce([row]);
+    const result = await repo.findTemplate('tenant-001', 'site.inspection.failed.v1', 'IN_APP');
+    expect(result).toEqual(row);
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when no template found', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await repo.findTemplate('tenant-001', 'unknown.event.v1', 'EMAIL');
+    expect(result).toBeNull();
+  });
+});
+
+// ── batch lookups (one query per notified user, not one per channel) ────────
+
+describe('findTemplatesByChannel', () => {
+  it('keys the resolved templates by channel', async () => {
+    mockQueryRaw.mockResolvedValueOnce([
+      { template_id: 't1', channel: 'IN_APP', body_template: 'a' },
+      { template_id: 't2', channel: 'EMAIL', body_template: 'b' },
+    ]);
+    const result = await repo.findTemplatesByChannel('tenant-001', 'evt.v1', [
+      'IN_APP',
+      'EMAIL',
+      'LINE',
+    ]);
+    expect(result.get('IN_APP')?.template_id).toBe('t1');
+    expect(result.get('EMAIL')?.template_id).toBe('t2');
+    expect(result.get('LINE')).toBeUndefined();
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('picks one template per channel, tenant-specific ahead of the shared default', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    await repo.findTemplatesByChannel('tenant-001', 'evt.v1', ['IN_APP']);
+    const sql = (mockQueryRaw.mock.calls[0][0] as string[]).join('?');
+    // Same precedence findTemplate applies, expressed per channel inside one statement.
+    expect(sql).toContain('DISTINCT ON (channel)');
+    expect(sql).toContain('tenant_id NULLS LAST');
+  });
+
+  it('short-circuits an empty channel list', async () => {
+    const result = await repo.findTemplatesByChannel('tenant-001', 'evt.v1', []);
+    expect(result.size).toBe(0);
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('findDisabledChannels', () => {
+  // Returns explicit OPT-OUTS: a channel with no preference row is enabled, which is what
+  // isChannelEnabled's `?? true` default meant.
+  it('returns only the channels explicitly switched off', async () => {
+    mockQueryRaw.mockResolvedValueOnce([{ channel: 'EMAIL' }]);
+    const result = await repo.findDisabledChannels('tenant-001', 'user-1', 'evt.v1', [
+      'IN_APP',
+      'EMAIL',
+      'LINE',
+    ]);
+    expect(result.has('EMAIL')).toBe(true);
+    expect(result.has('IN_APP')).toBe(false);
+    expect(result.has('LINE')).toBe(false);
+  });
+
+  it('returns an empty set when the user has opted out of nothing', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await repo.findDisabledChannels('tenant-001', 'user-1', 'evt.v1', ['IN_APP']);
+    expect(result.size).toBe(0);
+  });
+
+  it('short-circuits an empty channel list', async () => {
+    const result = await repo.findDisabledChannels('tenant-001', 'user-1', 'evt.v1', []);
+    expect(result.size).toBe(0);
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+  });
+});
+
+// ── createNotification ──────────────────────────────────────────────────────
+
+describe('createNotification', () => {
+  it('returns inserted notification row', async () => {
+    const row = {
+      notification_id: 'notif-001',
+      tenant_id: 'tenant-001',
+      recipient_id: 'user-001',
+      channel: 'IN_APP',
+      event_type: 'site.inspection.failed.v1',
+      subject: 'Alert',
+      body: 'Body text',
+      status: 'PENDING',
+      sent_at: null,
+      read_at: null,
+      created_at: new Date(),
+    };
+    mockQueryRaw.mockResolvedValueOnce([row]);
+    const result = await repo.createNotification({
+      tenant_id: 'tenant-001',
+      recipient_id: 'user-001',
+      channel: 'IN_APP',
+      event_type: 'site.inspection.failed.v1',
+      subject: 'Alert',
+      body: 'Body text',
+    });
+    expect(result.notification_id).toBe('notif-001');
+    expect(result.status).toBe('PENDING');
+  });
+
+  it('passes null subject when subject is null', async () => {
+    const row = {
+      notification_id: 'n1',
+      subject: null,
+      body: 'Body',
+      status: 'PENDING',
+      tenant_id: 'tenant-001',
+      recipient_id: 'user-001',
+      channel: 'IN_APP',
+      event_type: 'site.inspection.failed.v1',
+      sent_at: null,
+      read_at: null,
+      created_at: new Date(),
+    };
+    mockQueryRaw.mockResolvedValueOnce([row]);
+    const result = await repo.createNotification({
+      tenant_id: 'tenant-001',
+      recipient_id: 'user-001',
+      channel: 'IN_APP',
+      event_type: 'site.inspection.failed.v1',
+      subject: null,
+      body: 'Body',
+    });
+    expect(result.subject).toBeNull();
+  });
+});
+
+// ── findByRecipient ─────────────────────────────────────────────────────────
+
+describe('findByRecipient', () => {
+  it('returns paginated rows and count', async () => {
+    const rows = [
+      {
+        notification_id: 'n1',
+        tenant_id: 'tenant-001',
+        recipient_id: 'user-001',
+        channel: 'IN_APP',
+        event_type: 'e',
+        subject: null,
+        body: 'b',
+        status: 'PENDING',
+        sent_at: null,
+        read_at: null,
+        created_at: new Date(),
+      },
+    ];
+    mockQueryRaw.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ count: 1n }]);
+    const result = await repo.findByRecipient('tenant-001', 'user-001', 1, 20);
+    expect(result.rows).toHaveLength(1);
+    expect(result.total).toBe(1);
+  });
+
+  it('computes correct offset for page 2', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([{ count: 50n }]);
+    const result = await repo.findByRecipient('tenant-001', 'user-001', 2, 10);
+    expect(result.total).toBe(50);
+  });
+
+  it('returns total 0 when count value is undefined', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([{ count: undefined }]);
+    const result = await repo.findByRecipient('tenant-001', 'user-001', 1, 20);
+    expect(result.total).toBe(0);
+  });
+});
+
+// ── markRead ────────────────────────────────────────────────────────────────
+
+describe('markRead', () => {
+  it('returns true when at least one row updated', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(1);
+    const result = await repo.markRead('tenant-001', 'notif-001', 'user-001');
+    expect(result).toBe(true);
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when no rows updated', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(0);
+    const result = await repo.markRead('tenant-001', 'notif-001', 'user-002');
+    expect(result).toBe(false);
+  });
+});
+
+// ── markAllRead ─────────────────────────────────────────────────────────────
+
+describe('markAllRead', () => {
+  it('returns count of updated rows', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(3);
+    const result = await repo.markAllRead('tenant-001', 'user-001');
+    expect(result).toBe(3);
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── markSent ───────────────────────────────────────────────────────────────
+
+describe('markSent', () => {
+  it('calls $executeRaw once', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(1);
+    await repo.markSent('tenant-001', 'notif-001');
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── markFailed ─────────────────────────────────────────────────────────────
+
+describe('markFailed', () => {
+  it('calls $executeRaw once', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(1);
+    await repo.markFailed('tenant-001', 'notif-001');
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── findPreferences ─────────────────────────────────────────────────────────
+
+describe('findPreferences', () => {
+  it('returns preference rows', async () => {
+    const rows = [
+      {
+        pref_id: 'p1',
+        tenant_id: 'tenant-001',
+        user_id: 'user-001',
+        event_type: 'site.inspection.failed.v1',
+        channel: 'IN_APP',
+        is_enabled: true,
+      },
+    ];
+    mockQueryRaw.mockResolvedValueOnce(rows);
+    const result = await repo.findPreferences('tenant-001', 'user-001');
+    expect(result).toHaveLength(1);
+    expect(result[0].channel).toBe('IN_APP');
+  });
+
+  it('returns empty array when no preferences set', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await repo.findPreferences('tenant-001', 'user-001');
+    expect(result).toHaveLength(0);
+  });
+});
+
+// ── isChannelEnabled ────────────────────────────────────────────────────────
+
+describe('isChannelEnabled', () => {
+  it('returns false when preference row has is_enabled = false', async () => {
+    mockQueryRaw.mockResolvedValueOnce([{ is_enabled: false }]);
+    const result = await repo.isChannelEnabled(
+      'tenant-001',
+      'user-001',
+      'site.inspection.failed.v1',
+      'EMAIL',
+    );
+    expect(result).toBe(false);
+  });
+
+  it('returns true (default) when no preference row exists', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await repo.isChannelEnabled(
+      'tenant-001',
+      'user-001',
+      'site.inspection.failed.v1',
+      'EMAIL',
+    );
+    expect(result).toBe(true);
+  });
+
+  it('returns true when preference row has is_enabled = true', async () => {
+    mockQueryRaw.mockResolvedValueOnce([{ is_enabled: true }]);
+    const result = await repo.isChannelEnabled(
+      'tenant-001',
+      'user-001',
+      'site.inspection.failed.v1',
+      'IN_APP',
+    );
+    expect(result).toBe(true);
+  });
+});
+
+// ── upsertPreference ────────────────────────────────────────────────────────
+
+describe('upsertPreference', () => {
+  it('returns the upserted row', async () => {
+    const row = {
+      pref_id: 'p1',
+      tenant_id: 'tenant-001',
+      user_id: 'user-001',
+      event_type: 'site.inspection.failed.v1',
+      channel: 'EMAIL',
+      is_enabled: false,
+    };
+    mockQueryRaw.mockResolvedValueOnce([row]);
+    const result = await repo.upsertPreference({
+      tenant_id: 'tenant-001',
+      user_id: 'user-001',
+      event_type: 'site.inspection.failed.v1',
+      channel: 'EMAIL',
+      is_enabled: false,
+    });
+    expect(result.is_enabled).toBe(false);
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── updateQuietHours ──────────────────────────────────────────────────────────
+
+describe('updateQuietHours', () => {
+  it('updates the window on the user rows and returns the affected count', async () => {
+    mockExecuteRaw.mockResolvedValueOnce(3);
+    const result = await repo.updateQuietHours('tenant-001', 'user-001', '22:00', '07:00');
+    expect(result.updated).toBe(3);
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── upsertDeviceToken ───────────────────────────────────────────────────────
+
+describe('upsertDeviceToken', () => {
+  it('returns the upserted token row', async () => {
+    const row = {
+      token_id: 't1',
+      tenant_id: 'tenant-001',
+      user_id: 'user-001',
+      push_token: 'ExponentPushToken[abc]',
+      platform: 'IOS',
+      created_at: new Date(),
+    };
+    mockQueryRaw.mockResolvedValueOnce([row]);
+    const result = await repo.upsertDeviceToken({
+      tenant_id: 'tenant-001',
+      user_id: 'user-001',
+      push_token: 'ExponentPushToken[abc]',
+      platform: 'IOS',
+    });
+    expect(result.token_id).toBe('t1');
+    expect(result.platform).toBe('IOS');
+  });
+});
+
+// ── findDeviceTokens ────────────────────────────────────────────────────────
+
+describe('findDeviceTokens', () => {
+  it('returns device token rows for user', async () => {
+    const rows = [
+      {
+        token_id: 't1',
+        tenant_id: 'tenant-001',
+        user_id: 'user-001',
+        push_token: 'ExponentPushToken[abc]',
+        platform: 'IOS',
+        created_at: new Date(),
+      },
+    ];
+    mockQueryRaw.mockResolvedValueOnce(rows);
+    const result = await repo.findDeviceTokens('tenant-001', 'user-001');
+    expect(result).toHaveLength(1);
+    expect(result[0].push_token).toBe('ExponentPushToken[abc]');
+  });
+
+  it('returns empty array when user has no tokens', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await repo.findDeviceTokens('tenant-001', 'user-001');
+    expect(result).toHaveLength(0);
+  });
+});
+
+// ── findUsersByRole ─────────────────────────────────────────────────────────
+
+describe('findUsersByRole', () => {
+  it('returns empty array immediately when roles list is empty', async () => {
+    const result = await repo.findUsersByRole('tenant-001', []);
+    expect(result).toHaveLength(0);
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('returns users for matching roles', async () => {
+    const rows = [
+      { user_id: 'u1', email: 'eng@example.com' },
+      { user_id: 'u2', email: 'pm@example.com' },
+    ];
+    mockPlatformQueryRaw.mockResolvedValueOnce(rows);
+    const result = await repo.findUsersByRole('tenant-001', ['SITE_ENGINEER', 'PROJECT_MANAGER']);
+    expect(result).toHaveLength(2);
+    expect(result[0].email).toBe('eng@example.com');
+  });
+});
+
+// ── findSystemAdmins (§19.8 platform-level routing) ────────────────────────
+
+describe('findSystemAdmins', () => {
+  it('reads the platform schema on the shared connection, not a tenant one', async () => {
+    // Deliberately cross-tenant: there is no single tenant whose RLS context could see every
+    // SYSTEM_ADMIN, so a tenant-scoped db.run would return nobody and the human gate would go
+    // unnoticed.
+    mockPlatformQueryRaw.mockResolvedValueOnce([]);
+
+    await repo.findSystemAdmins();
+
+    expect(mockPrismaTransaction).toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('returns each admin with the tenant they belong to', async () => {
+    // The tenant comes back PER ROW because the notification is stored under the RECIPIENT's tenant
+    // — the event's own tenant_id is the 'platform' sentinel and is not a UUID.
+    mockPlatformQueryRaw.mockResolvedValueOnce([
+      { user_id: 'a1', email: 'a1@ops.example', tenant_id: 'tenant-aaa' },
+      { user_id: 'a2', email: 'a2@ops.example', tenant_id: 'tenant-bbb' },
+    ]);
+
+    const result = await repo.findSystemAdmins();
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({
+      user_id: 'a1',
+      email: 'a1@ops.example',
+      tenant_id: 'tenant-aaa',
+    });
+    expect(result[1].tenant_id).toBe('tenant-bbb');
+  });
+
+  it('returns nothing when the installation has no active system admins', async () => {
+    mockPlatformQueryRaw.mockResolvedValueOnce([]);
+
+    await expect(repo.findSystemAdmins()).resolves.toEqual([]);
+  });
+});
+
+describe('NotificationRepository onModuleDestroy', () => {
+  it('disconnects the platform Prisma client on shutdown', async () => {
+    await repo.onModuleDestroy();
+    expect(
+      (repo as unknown as { platformPrisma: { $disconnect: jest.Mock } }).platformPrisma
+        .$disconnect,
+    ).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── quiet hours + timezone (§19.6) ────────────────────────────────────────────
+
+describe('getTenantTimezone', () => {
+  it('returns the tenant timezone', async () => {
+    mockPlatformQueryRaw.mockResolvedValueOnce([{ timezone: 'Asia/Singapore' }]);
+    expect(await repo.getTenantTimezone('tenant-001')).toBe('Asia/Singapore');
+  });
+  it('falls back to Asia/Bangkok when the tenant row is missing', async () => {
+    mockPlatformQueryRaw.mockResolvedValueOnce([]);
+    expect(await repo.getTenantTimezone('tenant-001')).toBe('Asia/Bangkok');
+  });
+});
+
+describe('getUserQuietHours', () => {
+  it('returns the stored window', async () => {
+    mockQueryRaw.mockResolvedValueOnce([
+      { quiet_hours_start: '23:00:00', quiet_hours_end: '06:00:00' },
+    ]);
+    expect(await repo.getUserQuietHours('tenant-001', 'user-001')).toEqual({
+      start: '23:00:00',
+      end: '06:00:00',
+    });
+  });
+  it('defaults to 22:00–07:00 when no preference row exists', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    expect(await repo.getUserQuietHours('tenant-001', 'user-001')).toEqual({
+      start: '22:00:00',
+      end: '07:00:00',
+    });
+  });
+});
+
+// ── escalation + digest sweeps (§19.3) ────────────────────────────────────────
+
+describe('findEscalationCandidates', () => {
+  it('returns unacknowledged candidates', async () => {
+    const rows = [{ notification_id: 'n1', tenant_id: 't1' }];
+    mockPlatformQueryRaw.mockResolvedValueOnce(rows);
+    expect(await repo.findEscalationCandidates('safety.incident.created.v1', 1800)).toEqual(rows);
+  });
+});
+
+describe('markEscalated', () => {
+  it('stamps escalated_at via the platform executeRaw', async () => {
+    mockPlatformExecuteRaw.mockResolvedValueOnce(1);
+    await repo.markEscalated('n1');
+    expect(mockPlatformExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('listActiveTenants', () => {
+  it('returns active tenants with their timezone', async () => {
+    const rows = [{ tenant_id: 't1', timezone: 'Asia/Bangkok' }];
+    mockPlatformQueryRaw.mockResolvedValueOnce(rows);
+    expect(await repo.listActiveTenants()).toEqual(rows);
+  });
+});

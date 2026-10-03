@@ -1,0 +1,134 @@
+// MinioService — per-tenant bucket management and signed URL generation.
+// Bucket naming: cos-{tenant_id} (one bucket per tenant, spec §Phase 9).
+// Quarantine: cos-quarantine-{tenant_id} (separate bucket; 30-day retention).
+// Signed URL TTL: 1 hour by default (configurable via SIGNED_URL_TTL_SECONDS).
+
+import * as Minio from 'minio';
+import { CopyConditions } from 'minio';
+import type { FileServiceConfig } from '../config';
+
+export class MinioService {
+  private readonly client: Minio.Client;
+  private readonly ttlSeconds: number;
+
+  constructor(config: FileServiceConfig) {
+    this.client = new Minio.Client({
+      endPoint: config.minio.endPoint,
+      port: config.minio.port,
+      useSSL: config.minio.useSSL,
+      accessKey: config.minio.accessKey,
+      secretKey: config.minio.secretKey,
+    });
+    this.ttlSeconds = config.signedUrlTtlSeconds;
+  }
+
+  bucketName(tenantId: string): string {
+    return `cos-${tenantId}`;
+  }
+
+  quarantineBucketName(tenantId: string): string {
+    return `cos-quarantine-${tenantId}`;
+  }
+
+  async ensureBucket(tenantId: string): Promise<void> {
+    const bucket = this.bucketName(tenantId);
+    const exists = await this.client.bucketExists(bucket);
+    if (!exists) {
+      await this.client.makeBucket(bucket, 'ap-southeast-1');
+    }
+  }
+
+  async ensureQuarantineBucket(tenantId: string): Promise<void> {
+    const bucket = this.quarantineBucketName(tenantId);
+    const exists = await this.client.bucketExists(bucket);
+    if (!exists) {
+      await this.client.makeBucket(bucket, 'ap-southeast-1');
+    }
+  }
+
+  async uploadFile(params: {
+    tenantId: string;
+    storedKey: string;
+    buffer: Buffer;
+    mimeType: string;
+  }): Promise<void> {
+    const bucket = this.bucketName(params.tenantId);
+    await this.ensureBucket(params.tenantId);
+    await this.client.putObject(bucket, params.storedKey, params.buffer, params.buffer.length, {
+      'Content-Type': params.mimeType,
+    });
+  }
+
+  async getSignedUrl(tenantId: string, storedKey: string): Promise<string> {
+    const bucket = this.bucketName(tenantId);
+    return this.client.presignedGetObject(bucket, storedKey, this.ttlSeconds);
+  }
+
+  /**
+   * The stored object as a READABLE STREAM, for handing straight to a reply.
+   *
+   * Distinct from `downloadToBuffer` below on purpose, and the difference is not stylistic: that one
+   * exists to hand the whole object to ClamAV, which needs it in memory, and this one exists to send
+   * bytes to a client, which does not. Buffering to serve would put a copy of every concurrent
+   * download in the pod's heap — the same bounded-memory rule `readMultipartBuffer` follows on the
+   * way in (M6).
+   *
+   * The caller is responsible for having checked that the file exists, belongs to the tenant and is
+   * CLEAN — this method knows nothing about any of that.
+   */
+  async getObjectStream(tenantId: string, storedKey: string): Promise<NodeJS.ReadableStream> {
+    const bucket = this.bucketName(tenantId);
+    return this.client.getObject(bucket, storedKey);
+  }
+
+  // Streams an object from cos-{tenantId} into a Buffer. Used by AntivirusService.scan(fileId)
+  // to fetch the stored bytes for scanning (spec §Phase 9: scan takes a fileId, not a buffer).
+  async downloadToBuffer(tenantId: string, storedKey: string): Promise<Buffer> {
+    const bucket = this.bucketName(tenantId);
+    const stream = await this.client.getObject(bucket, storedKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  async deleteFile(tenantId: string, storedKey: string): Promise<void> {
+    const bucket = this.bucketName(tenantId);
+    await this.client.removeObject(bucket, storedKey);
+  }
+
+  // Copies file from cos-{tenantId} to cos-quarantine-{tenantId}, then removes original.
+  async moveToQuarantine(tenantId: string, storedKey: string): Promise<void> {
+    const srcBucket = this.bucketName(tenantId);
+    const destBucket = this.quarantineBucketName(tenantId);
+    await this.ensureQuarantineBucket(tenantId);
+    await this.client.copyObject(
+      destBucket,
+      storedKey,
+      `/${srcBucket}/${storedKey}`,
+      new CopyConditions(),
+    );
+    await this.client.removeObject(srcBucket, storedKey);
+  }
+
+  // Copies file from cos-quarantine-{tenantId} back to cos-{tenantId}, then removes quarantine copy.
+  async moveFromQuarantine(tenantId: string, storedKey: string): Promise<void> {
+    const srcBucket = this.quarantineBucketName(tenantId);
+    const destBucket = this.bucketName(tenantId);
+    await this.ensureBucket(tenantId);
+    await this.client.copyObject(
+      destBucket,
+      storedKey,
+      `/${srcBucket}/${storedKey}`,
+      new CopyConditions(),
+    );
+    await this.client.removeObject(srcBucket, storedKey);
+  }
+
+  // Permanently removes a file from the quarantine bucket (30-day retention purge).
+  async deleteFromQuarantine(tenantId: string, storedKey: string): Promise<void> {
+    const bucket = this.quarantineBucketName(tenantId);
+    await this.client.removeObject(bucket, storedKey);
+  }
+}

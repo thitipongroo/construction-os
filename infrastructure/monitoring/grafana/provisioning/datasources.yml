@@ -1,0 +1,61 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus:9090
+    access: proxy
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:3100
+    access: proxy
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: jaeger
+          matcherRegex: '"trace_id":"([a-f0-9]+)"'
+          name: TraceID
+          url: '$${__value.raw}'
+
+  - name: Jaeger
+    type: jaeger
+    uid: jaeger
+    url: http://jaeger-query:16686
+    access: proxy
+
+  # Required by Business Metrics dashboard (site_activity_daily aggregation)
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    uid: clickhouse
+    url: http://clickhouse:8123
+    access: proxy
+    jsonData:
+      defaultDatabase: analytics
+      port: 8123
+      server: clickhouse
+      username: cos_readonly
+      tlsSkipVerify: false
+    secureJsonData:
+      password: ${CLICKHOUSE_READONLY_PASSWORD}
+
+  # Required by Business Metrics dashboard (audit_logs, purchase_orders queries)
+  - name: PostgreSQL
+    type: postgres
+    uid: postgresql
+    url: pgbouncer:5432
+    access: proxy
+    database: cos
+    user: cos_grafana_ro
+    jsonData:
+      sslmode: require
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: ${POSTGRES_GRAFANA_RO_PASSWORD}

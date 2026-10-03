@@ -1,0 +1,2054 @@
+openapi: '3.1.0'
+info:
+  title: Construction OS — Project Service API
+  description: |
+    Project lifecycle management: create, update, status transitions, member management.
+    All endpoints require a valid JWT (Keycloak RS256 or COS OTP token).
+    Error codes follow the COS-PROJ-NNN registry (docs/api/error-codes.md).
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  contact:
+    name: Construction OS Engineering
+
+servers:
+  - url: /api/v1
+    description: Current API version
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    TaskDependency:
+      type: object
+      description: |
+        One Task → Task edge of the project schedule network (ADR-097). This is NOT what completion
+        gate 3 reads — that keeps the ADR-026 BOQ-category derivation.
+      properties:
+        dependency_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        predecessor_task_id: { type: string, format: uuid }
+        successor_task_id: { type: string, format: uuid }
+        dependency_type:
+          type: string
+          enum: [FS, SS, FF, SF]
+          description: >-
+            FS finish-to-start, SS start-to-start, FF finish-to-finish, SF start-to-finish
+        lag_days:
+          type: integer
+          description: Signed — a negative value is a lead
+        created_at: { type: string, format: date-time }
+        modified_at: { type: string, format: date-time }
+
+    ProjectType:
+      type: string
+      enum: [RESIDENTIAL, COMMERCIAL, INFRASTRUCTURE, INDUSTRIAL]
+
+    ProjectStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, ON_HOLD, COMPLETED, CANCELLED]
+
+    CosRole:
+      type: string
+      enum:
+        - SYSTEM_ADMIN
+        - TENANT_ADMIN
+        - EXECUTIVE
+        - PROJECT_MANAGER
+        - PROCUREMENT_OFFICER
+        - FINANCE
+        - SAFETY_OFFICER
+        - SITE_ENGINEER
+        - CRM_SALES_MANAGER
+        - PROC_MANAGER
+        - SITE_WORKER
+        - VIEWER
+
+    Project:
+      type: object
+      required:
+        - project_id
+        - tenant_id
+        - project_code
+        - project_name
+        - project_type
+        - status
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_code:
+          type: string
+          maxLength: 50
+          example: 'PROJ-2026-001'
+        project_name:
+          type: string
+          maxLength: 255
+          example: 'Riverside Tower A'
+        project_type:
+          $ref: '#/components/schemas/ProjectType'
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        budget_amount:
+          type: [string, 'null']
+          description: 'DECIMAL(19,4) as string — use decimal.js on client'
+          example: '5000000.0000'
+        budget_currency:
+          type: [string, 'null']
+          description: 'ISO 4217 code'
+          example: 'THB'
+        start_date:
+          type: [string, 'null']
+          format: date
+        end_date:
+          type: [string, 'null']
+          format: date
+        estimated_completion_date:
+          type: [string, 'null']
+          format: date
+          description: 'PM-entered projected completion; feeds AI delay-risk, falls back to end_date when null'
+        on_hold_reason:
+          type: [string, 'null']
+          maxLength: 500
+        on_hold_at:
+          type: [string, 'null']
+          format: date-time
+        cancellation_reason:
+          type: [string, 'null']
+          maxLength: 500
+        cancelled_at:
+          type: [string, 'null']
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateProjectRequest:
+      type: object
+      required:
+        - project_code
+        - project_name
+        - project_type
+      properties:
+        project_code:
+          type: string
+          maxLength: 50
+        project_name:
+          type: string
+          maxLength: 255
+        project_type:
+          $ref: '#/components/schemas/ProjectType'
+        budget_amount:
+          type: string
+          description: 'DECIMAL(19,4) as string'
+        budget_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+
+    UpdateProjectRequest:
+      type: object
+      properties:
+        project_name:
+          type: string
+          maxLength: 255
+        budget_amount:
+          type: string
+        budget_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        estimated_completion_date:
+          type: string
+          format: date
+          description: 'PM-entered projected completion; feeds AI delay-risk, falls back to end_date when null'
+
+    TransitionProjectRequest:
+      type: object
+      required:
+        - to
+      properties:
+        to:
+          type: string
+          enum: [ACTIVE, ON_HOLD, COMPLETED, CANCELLED]
+          description: 'Target status. reason is required for ON_HOLD and CANCELLED.'
+        reason:
+          type: string
+          maxLength: 500
+
+    ProjectMember:
+      type: object
+      required:
+        - membership_id
+        - project_id
+        - tenant_id
+        - user_id
+        - role
+        - assigned_at
+        - assigned_by
+      properties:
+        membership_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/CosRole'
+        assigned_at:
+          type: string
+          format: date-time
+        assigned_by:
+          type: string
+          format: uuid
+
+    AddMemberRequest:
+      type: object
+      required:
+        - user_id
+        - role
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/CosRole'
+
+    ProjectDocument:
+      type: object
+      required:
+        - document_id
+        - project_id
+        - tenant_id
+        - uploaded_by
+        - uploaded_at
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        file_id:
+          type: [string, 'null']
+          format: uuid
+        document_type:
+          type: [string, 'null']
+        uploaded_by:
+          type: string
+          format: uuid
+        uploaded_at:
+          type: string
+          format: date-time
+
+    ProjectListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        nextCursor:
+          type: [string, 'null']
+          description: 'Base64 cursor for the next page; null when no more pages'
+
+    CosError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+            - timestamp
+          properties:
+            code:
+              type: string
+              example: 'COS-PROJ-001'
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+    # ── Spatial hierarchy + asset/unit entities (Phase 3, 2026-07-05; §10.2 / §11.2) ──
+    Cursor:
+      type: object
+      properties:
+        nextCursor:
+          type: [string, 'null']
+
+    Building:
+      type: object
+      properties:
+        building_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        building_name: { type: string, maxLength: 255 }
+        building_type: { type: [string, 'null'], maxLength: 100 }
+        total_floors: { type: [integer, 'null'] }
+        location: { type: [string, 'null'], maxLength: 255 }
+        status: { type: [string, 'null'], maxLength: 50 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateBuildingRequest:
+      type: object
+      required: [building_name]
+      properties:
+        building_name: { type: string, maxLength: 255 }
+        building_type: { type: string, maxLength: 100 }
+        total_floors: { type: integer, minimum: 0 }
+        location: { type: string, maxLength: 255 }
+        status: { type: string, maxLength: 50 }
+    UpdateBuildingRequest:
+      type: object
+      properties:
+        building_name: { type: string, maxLength: 255 }
+        building_type: { type: string, maxLength: 100 }
+        total_floors: { type: integer, minimum: 0 }
+        location: { type: string, maxLength: 255 }
+        status: { type: string, maxLength: 50 }
+
+    Floor:
+      type: object
+      properties:
+        floor_id: { type: string, format: uuid }
+        building_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        floor_number: { type: integer }
+        gross_area_sqm: { type: [string, 'null'] }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateFloorRequest:
+      type: object
+      required: [floor_number]
+      properties:
+        floor_number: { type: integer }
+        gross_area_sqm: { type: string, description: 'DECIMAL(12,2) as string' }
+    UpdateFloorRequest:
+      type: object
+      properties:
+        floor_number: { type: integer }
+        gross_area_sqm: { type: string }
+
+    Room:
+      type: object
+      properties:
+        room_id: { type: string, format: uuid }
+        floor_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        room_number: { type: string, maxLength: 50 }
+        room_type: { type: [string, 'null'], maxLength: 100 }
+        area_sqm: { type: [string, 'null'] }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateRoomRequest:
+      type: object
+      required: [room_number]
+      properties:
+        room_number: { type: string, maxLength: 50 }
+        room_type: { type: string, maxLength: 100 }
+        area_sqm: { type: string }
+    UpdateRoomRequest:
+      type: object
+      properties:
+        room_number: { type: string, maxLength: 50 }
+        room_type: { type: string, maxLength: 100 }
+        area_sqm: { type: string }
+
+    StructureType:
+      type: string
+      enum: [column, beam, slab, wall]
+    Structure:
+      type: object
+      properties:
+        structure_id: { type: string, format: uuid }
+        building_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        structure_type: { $ref: '#/components/schemas/StructureType' }
+        material_type: { type: [string, 'null'], maxLength: 100 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateStructureRequest:
+      type: object
+      required: [structure_type]
+      properties:
+        structure_type: { $ref: '#/components/schemas/StructureType' }
+        material_type: { type: string, maxLength: 100 }
+    UpdateStructureRequest:
+      type: object
+      properties:
+        structure_type: { $ref: '#/components/schemas/StructureType' }
+        material_type: { type: string, maxLength: 100 }
+
+    Unit:
+      type: object
+      properties:
+        unit_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        building_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        unit_number: { type: string, maxLength: 50 }
+        unit_type: { type: [string, 'null'], maxLength: 100 }
+        status: { type: [string, 'null'], maxLength: 50 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateUnitRequest:
+      type: object
+      required: [unit_number]
+      properties:
+        unit_number: { type: string, maxLength: 50 }
+        unit_type: { type: string, maxLength: 100 }
+        status: { type: string, maxLength: 50 }
+    UpdateUnitRequest:
+      type: object
+      properties:
+        unit_number: { type: string, maxLength: 50 }
+        unit_type: { type: string, maxLength: 100 }
+        status: { type: string, maxLength: 50 }
+
+    Asset:
+      type: object
+      properties:
+        asset_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        asset_type: { type: [string, 'null'], maxLength: 100 }
+        handover_date: { type: [string, 'null'], format: date }
+        warranty_expiry: { type: [string, 'null'], format: date }
+        maintenance_status: { type: [string, 'null'], maxLength: 50 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateAssetRequest:
+      type: object
+      properties:
+        asset_type: { type: string, maxLength: 100 }
+        handover_date: { type: string, format: date }
+        warranty_expiry: { type: string, format: date }
+        maintenance_status: { type: string, maxLength: 50 }
+    UpdateAssetRequest:
+      type: object
+      properties:
+        asset_type: { type: string, maxLength: 100 }
+        handover_date: { type: string, format: date }
+        warranty_expiry: { type: string, format: date }
+        maintenance_status: { type: string, maxLength: 50 }
+
+    # ── Project membership, phases and the risk register (added 2026-08-24) ──
+    ProjectPhaseStatus:
+      type: string
+      enum: [NOT_STARTED, IN_PROGRESS, COMPLETED]
+
+    ProjectPhase:
+      type: object
+      properties:
+        phase_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        seq:
+          type: integer
+          minimum: 1
+          description: |
+            Ordering key, unique per project. The CURRENT phase is derived from `seq` and `status`
+            by the reader, not stored — ADR-070 keeps one fact in one place.
+        name: { type: string, maxLength: 255 }
+        status: { $ref: '#/components/schemas/ProjectPhaseStatus' }
+        planned_start: { type: [string, 'null'], format: date }
+        planned_end: { type: [string, 'null'], format: date }
+        actual_start: { type: [string, 'null'], format: date }
+        actual_end: { type: [string, 'null'], format: date }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RiskCategory:
+      type: string
+      enum: [SAFETY, FINANCIAL, SCHEDULE, TECHNICAL, EXTERNAL, OTHER]
+
+    RiskStatus:
+      type: string
+      enum: [OPEN, MITIGATING, CLOSED, ACCEPTED]
+
+    RiskSource:
+      type: string
+      description: |
+        `AI_SUGGESTED` marks a risk raised by the Layer B delay-risk model for human triage. It is
+        never auto-closed and never auto-actioned — §22.3 bars a model from executing a transition
+        that requires a human.
+      enum: [MANUAL, AI_SUGGESTED]
+
+    ProjectRisk:
+      type: object
+      properties:
+        risk_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        title: { type: string, maxLength: 255 }
+        description: { type: [string, 'null'] }
+        category: { $ref: '#/components/schemas/RiskCategory' }
+        likelihood: { type: integer, minimum: 1, maximum: 5 }
+        impact: { type: integer, minimum: 1, maximum: 5 }
+        risk_score:
+          type: integer
+          minimum: 1
+          maximum: 25
+          readOnly: true
+          description: |
+            `likelihood × impact`, a GENERATED STORED column. Read-only by construction: it cannot
+            drift from its inputs, and sending it is not an error — it is ignored.
+        mitigation: { type: [string, 'null'] }
+        owner: { type: [string, 'null'], format: uuid }
+        status: { $ref: '#/components/schemas/RiskStatus' }
+        source: { $ref: '#/components/schemas/RiskSource' }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+paths:
+  # ── Project membership (§14 Project APIs; OQ-21) ──────────────────────────
+  # Documented here 2026-08-24. §14 recorded these as "documented in OpenAPI" on 2026-08-22; they
+  # were not, in this or any other file.
+  /projects/mine:
+    get:
+      summary: The signed-in user's own projects
+      description: |
+        Scoped by the JWT, so it needs no role. Asking about ANOTHER person is a different
+        endpoint with a different guard — see `/projects/user/{userId}`. That separation is
+        deliberate: a query parameter that silently changes who you are asking about is the shape
+        that ships without a guard.
+      operationId: listMyProjects
+      tags: [projects]
+      responses:
+        '200':
+          description: The projects the caller is a member of
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthenticated
+
+  /projects/user/{userId}:
+    get:
+      summary: A named user's projects
+      description: |
+        TENANT_ADMIN only, and tenant-scoped like every other read — an admin cannot ask about a
+        user in another tenant. It exists for offboarding: before deactivating someone you have to
+        know what they are still on.
+      operationId: listProjectsForUser
+      tags: [projects]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The projects that user is a member of
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+
+  # ── Project phases (ADR-070) ──────────────────────────────────────────────
+  /projects/{projectId}/phases:
+    get:
+      summary: List a project's phases, ordered by seq
+      description: |
+        The CURRENT phase is not a field. It is derived by the reader — the lowest-`seq` phase that
+        is `IN_PROGRESS`, else the lowest-`seq` phase not `COMPLETED`, else none — so there is no
+        second place for it to be wrong.
+      operationId: listProjectPhases
+      tags: [phases]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Ordered phase list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectPhase'
+        '401':
+          description: Unauthenticated
+
+    post:
+      summary: Create a phase under a project
+      description: PROJECT_MANAGER or TENANT_ADMIN. `seq` is unique per project.
+      operationId: createProjectPhase
+      tags: [phases]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seq, name]
+              properties:
+                seq: { type: integer, minimum: 1 }
+                name: { type: string, maxLength: 255 }
+                status: { $ref: '#/components/schemas/ProjectPhaseStatus' }
+                planned_start: { type: string, format: date }
+                planned_end: { type: string, format: date }
+                actual_start: { type: string, format: date }
+                actual_end: { type: string, format: date }
+      responses:
+        '201':
+          description: Phase created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPhase'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: COS-PHASE-002 — parent project not found
+
+  /phases/{id}:
+    patch:
+      summary: Update a phase
+      description: |
+        PROJECT_MANAGER or TENANT_ADMIN. Partial. Advancing a project is a `status` (and sometimes
+        `seq`) change here — there is no separate transition endpoint, because the phase list IS
+        the schedule.
+      operationId: updateProjectPhase
+      tags: [phases]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seq: { type: integer, minimum: 1 }
+                name: { type: string, maxLength: 255 }
+                status: { $ref: '#/components/schemas/ProjectPhaseStatus' }
+                planned_start: { type: string, format: date }
+                planned_end: { type: string, format: date }
+                actual_start: { type: string, format: date }
+                actual_end: { type: string, format: date }
+      responses:
+        '200':
+          description: Updated phase
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPhase'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: COS-PHASE-001 — not found
+
+  # ── Risk register (ADR-065) ───────────────────────────────────────────────
+  /projects/{projectId}/risks:
+    get:
+      summary: List a project's risks, highest-risk first
+      description: Ordered by `risk_score` descending. Any authenticated tenant user may read.
+      operationId: listProjectRisks
+      tags: [risks]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/RiskStatus' }
+        - name: category
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/RiskCategory' }
+      responses:
+        '200':
+          description: The risk register
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectRisk'
+        '401':
+          description: Unauthenticated
+
+    post:
+      summary: Raise a risk under a project
+      description: |
+        PROJECT_MANAGER, SITE_ENGINEER or TENANT_ADMIN — a risk is usually noticed on site, which
+        is why the engineer is in the list where editing it is narrower.
+      operationId: createProjectRisk
+      tags: [risks]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category, likelihood, impact]
+              properties:
+                title: { type: string, maxLength: 255 }
+                description: { type: string }
+                category: { $ref: '#/components/schemas/RiskCategory' }
+                likelihood: { type: integer, minimum: 1, maximum: 5 }
+                impact: { type: integer, minimum: 1, maximum: 5 }
+                mitigation: { type: string }
+                owner: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Risk raised
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: COS-RISK-002 — parent project not found
+
+  /risks/{riskId}:
+    patch:
+      summary: Edit a risk
+      description: |
+        PROJECT_MANAGER or TENANT_ADMIN — narrower than raising one. `risk_score` is not editable:
+        it is generated from `likelihood × impact`.
+      operationId: updateProjectRisk
+      tags: [risks]
+      parameters:
+        - name: riskId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 255 }
+                description: { type: string }
+                category: { $ref: '#/components/schemas/RiskCategory' }
+                likelihood: { type: integer, minimum: 1, maximum: 5 }
+                impact: { type: integer, minimum: 1, maximum: 5 }
+                mitigation: { type: string }
+                owner: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Updated risk
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: COS-RISK-001 — not found
+
+  /risks/{riskId}/status:
+    patch:
+      summary: Transition a risk's status
+      description: |
+        PROJECT_MANAGER or TENANT_ADMIN. Separate from the edit route so that closing a risk is its
+        own act in the audit trail rather than one field of a bulk update.
+      operationId: updateProjectRiskStatus
+      tags: [risks]
+      parameters:
+        - name: riskId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/RiskStatus' }
+      responses:
+        '200':
+          description: The risk after the status change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '404':
+          description: COS-RISK-001 — not found
+  /projects:
+    post:
+      summary: Create a new project
+      description: |
+        Creates a project in DRAFT status.
+        Emits `construction.project.created.v1` Kafka event.
+        Required role: PROJECT_MANAGER or TENANT_ADMIN.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CosError'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role
+        '422':
+          description: Business rule violation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CosError'
+
+    get:
+      summary: List projects
+      description: |
+        Returns a cursor-paginated list of projects for the authenticated tenant.
+        Supports optional filters by status, type, and full-text search (q).
+      operationId: listProjects
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/ProjectStatus'
+        - in: query
+          name: type
+          schema:
+            $ref: '#/components/schemas/ProjectType'
+        - in: query
+          name: q
+          schema:
+            type: string
+            maxLength: 100
+          description: 'Full-text search on project_name and project_code (OpenSearch)'
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: 'Pagination cursor from previous response'
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated project list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        '400':
+          description: Invalid filter value
+
+  /projects/{id}:
+    get:
+      summary: Get project by ID
+      operationId: getProject
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          description: Not found (COS-PROJ-001)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CosError'
+
+    patch:
+      summary: Update project metadata
+      description: |
+        Updates project_name, budget, or dates. Does NOT update status — use /transitions.
+        Emits `construction.project.updated.v1`.
+        Blocked if project is COMPLETED or CANCELLED (COS-PROJ-002).
+      operationId: updateProject
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '403':
+          description: Insufficient role
+        '422':
+          description: Not editable (COS-PROJ-002)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CosError'
+
+  /projects/{id}/transitions:
+    post:
+      summary: Trigger a status transition
+      description: |
+        Valid transitions (source: context/phases/phase-03-project-service.md):
+        - DRAFT → ACTIVE | CANCELLED
+        - ACTIVE → ON_HOLD | COMPLETED | CANCELLED
+        - ON_HOLD → ACTIVE | CANCELLED
+        - COMPLETED and CANCELLED are terminal.
+
+        Emits `construction.project.status_changed.v1`.
+        COMPLETED also emits `construction.project.archived.v1`.
+      operationId: transitionProject
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionProjectRequest'
+      responses:
+        '200':
+          description: Project after transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '403':
+          description: Insufficient role
+        '422':
+          description: Transition not allowed (COS-PROJ-003)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CosError'
+
+  /projects/{id}/members:
+    post:
+      summary: Add or update a project member
+      description: |
+        Adds user_id to the project with the specified role.
+        If user_id is already a member, their role is updated (upsert).
+      operationId: addProjectMember
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '204':
+          description: Member added or role updated
+        '400':
+          description: Validation error
+        '403':
+          description: Insufficient role
+        '404':
+          description: Project not found
+
+    get:
+      summary: List project members
+      operationId: listProjectMembers
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Member list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectMember'
+        '404':
+          description: Project not found
+
+  /projects/{id}/members/{userId}:
+    delete:
+      summary: Remove a project member
+      operationId: removeProjectMember
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Member removed
+        '403':
+          description: Insufficient role
+        '404':
+          description: Project not found
+
+  /projects/{id}/documents:
+    get:
+      summary: List project documents
+      description: |
+        Returns document metadata. File content is served by the File Service (Phase 9).
+        file_id is a loose reference to File Service — no FK constraint.
+      operationId: listProjectDocuments
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Document list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectDocument'
+        '404':
+          description: Project not found
+  /projects/{projectId}/tasks:
+    get:
+      summary: List tasks for a project (filter by assignee, status)
+      operationId: listTasks
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: assigned_to
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED, CANCELLED]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated tasks
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      summary: Create a task
+      operationId: createTask
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_name]
+              properties:
+                task_name:
+                  type: string
+                work_type:
+                  type: string
+                boq_item_id:
+                  type: string
+                  format: uuid
+                floor_id:
+                  type: string
+                  format: uuid
+                room_id:
+                  type: string
+                  format: uuid
+                assigned_to:
+                  type: string
+                  format: uuid
+                planned_start:
+                  type: string
+                  format: date
+                planned_end:
+                  type: string
+                  format: date
+      responses:
+        '201':
+          description: Task created
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /projects/{projectId}/progress:
+    get:
+      summary: Project progress — BOQ-value-weighted earned percent, planned percent, and SPI
+      description: |
+        Authoritative formula and thresholds: 32-implementation-specifications §32.12.
+
+        Earned percent weights each task's progress_percent by the value of the BOQ item it delivers
+        (cost-ratio method) rather than averaging tasks, so a 10M concrete pour outweighs a 5k paint
+        task. Planned percent applies the same weights to where each task should be today, and
+        SPI = earned / planned yields the schedule verdict.
+
+        Every field is nullable and null means "not computable", never zero — a project with no
+        BOQ-linked task returns nulls rather than a 0% bar. Tasks with boq_item_id = null carry no
+        weight and are excluded.
+      operationId: getProjectProgress
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Progress figures for the project as of now
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [percentComplete, plannedPercent, spi, status, scheduleDaysBehind]
+                properties:
+                  percentComplete:
+                    type: [number, 'null']
+                    minimum: 0
+                    maximum: 100
+                    description: Earned percent (EV%). Null when no BOQ-linked task exists.
+                    example: 65.4
+                  plannedPercent:
+                    type: [number, 'null']
+                    minimum: 0
+                    maximum: 100
+                    description: Planned percent (PV%) as of now. Null when no BOQ-linked task has planned dates.
+                    example: 60.1
+                  spi:
+                    type: [number, 'null']
+                    description: Schedule Performance Index (EV% / PV%). Null when plannedPercent is null or 0.
+                    example: 1.088
+                  status:
+                    type: [string, 'null']
+                    enum: [ahead, on_track, behind]
+                    description: SPI verdict — >1.05 ahead, 0.95–1.05 on_track, <0.95 behind. Null when spi is null.
+                    example: ahead
+                  scheduleDaysBehind:
+                    type: [integer, 'null']
+                    description: >-
+                      Earned Schedule day-variance (§32.12): positive = days behind, negative = days
+                      ahead. The date the plan expected today's earned percent, versus today. Null when
+                      there is no schedulable task.
+                    example: 21
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /tasks/{taskId}:
+    patch:
+      summary: Update task progress / status (completion gate on COMPLETED)
+      description: |
+        Transitioning status to COMPLETED is rejected with 422 (code COS-TASK-001) and the list
+        of blocking gate names unless all hard-block gates pass (inspections, issues,
+        dependencies, permits). See ADR-026.
+      operationId: updateTask
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED, CANCELLED]
+                progress_percent:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                assigned_to:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Task updated
+        '422':
+          description: Completion blocked by hard-block gates (COS-TASK-001)
+
+  # ── Schedule network + critical path (ADR-097, 2026-09-05) ──
+  # These do NOT feed completion gate 3. That gate keeps the ADR-026 BOQ-category derivation; the
+  # edges below describe the schedule and nothing else. RBAC: read = TASK_READ_ROLES (EXECUTIVE
+  # included); write = PROJECT_MANAGER / SITE_ENGINEER / TENANT_ADMIN.
+  /tasks/portfolio-summary:
+    get:
+      summary: Tenant-wide task counts — overdue, due this week, blocked
+      description: |
+        Counts every non-cancelled task in the calling tenant, across all its projects, in one
+        query. Answers the EXECUTIVE Tasks screen, which is a portfolio view and would otherwise
+        need one request per project.
+
+        "Overdue" means planned_end has passed and the task is not finished. It is NOT a priority
+        or a severity: projects.tasks has no such column, so no count here can claim one (ADR-085).
+        A task with no planned_end falls into neither date bucket — it is unscheduled, not late.
+      operationId: portfolioTaskSummary
+      responses:
+        '200':
+          description: Tenant-wide counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  [overdue_count, due_this_week_count, blocked_count, open_count, project_count]
+                properties:
+                  overdue_count:
+                    type: integer
+                    description: planned_end < today, status not COMPLETED/CANCELLED
+                  due_this_week_count:
+                    type: integer
+                    description: planned_end within the next 7 days inclusive of today
+                  blocked_count:
+                    type: integer
+                    description: status = BLOCKED
+                  open_count:
+                    type: integer
+                    description: status not COMPLETED/CANCELLED
+                  project_count:
+                    type: integer
+                    description: distinct projects the counted tasks belong to
+        '403':
+          description: The caller's role is not in TASK_READ_ROLES
+
+  /projects/{projectId}/critical-path:
+    get:
+      summary: Critical path — forward/backward pass over the project schedule network
+      description: |
+        Earliest and latest start/finish and total float per task; the critical path is the
+        zero-float set (`critical_task_ids`).
+
+        Durations are CALENDAR days. A working-day pass needs a per-project calendar — weekends,
+        Thai public holidays, site shutdowns — and no such table exists in this platform, so the
+        response reports `working_day_calendar: false` rather than leaving the caller to assume.
+
+        A task without BOTH planned dates cannot be scheduled and is left out of the network,
+        counted in `excluded_task_count`. A project with no schedulable task returns null dates and
+        an empty list, not an error.
+      operationId: getCriticalPath
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The computed schedule
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project_id: { type: string, format: uuid }
+                  project_start: { type: [string, 'null'], format: date }
+                  project_finish: { type: [string, 'null'], format: date }
+                  duration_days: { type: integer }
+                  working_day_calendar:
+                    type: boolean
+                    description: Always false today — see the description above
+                  critical_task_ids:
+                    type: array
+                    items: { type: string, format: uuid }
+                  excluded_task_count:
+                    type: integer
+                    description: Tasks left out for want of both planned dates
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        task_id: { type: string, format: uuid }
+                        task_name: { type: string }
+                        status:
+                          type: string
+                          enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED, CANCELLED]
+                        work_type: { type: string }
+                        duration_days: { type: integer }
+                        earliest_start: { type: string, format: date }
+                        earliest_finish: { type: string, format: date }
+                        latest_start: { type: string, format: date }
+                        latest_finish: { type: string, format: date }
+                        total_float_days: { type: integer }
+                        is_critical: { type: boolean }
+                        assigned_to:
+                          type: [string, 'null']
+                          format: uuid
+                          description: |
+                            Who the task is assigned to, or null. The id only — this endpoint
+                            never joins a name or a photograph, because a schedule answer has no
+                            need of a person's identity.
+        '403':
+          description: The caller's role is not in TASK_READ_ROLES
+
+  /tasks/portfolio-critical-path:
+    get:
+      summary: Critical tasks across every project in the tenant
+      description: |
+        Runs the same forward/backward pass as `/projects/{projectId}/critical-path`, once per
+        project that has at least one non-cancelled task, and returns the zero-float tasks of all
+        of them — earliest start first, each row naming the project it belongs to.
+
+        THERE IS NO SINGLE CRITICAL PATH ACROSS PROJECTS. Each network has its own origin and its
+        own dependencies, so one pass over all of them would invent relationships nobody declared.
+        This concatenates real per-project results, which is what a portfolio screen can honestly
+        show: the tasks that cannot slip, in every project. `project_count` says how many networks
+        that covers.
+
+        Durations are CALENDAR days, for the reason given on the per-project route.
+      operationId: portfolioCriticalPath
+      responses:
+        '200':
+          description: Every project's critical tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, project_count, working_day_calendar, excluded_task_count]
+                properties:
+                  project_count:
+                    type: integer
+                    description: Projects with at least one non-cancelled task
+                  working_day_calendar:
+                    type: boolean
+                    description: Always false today — see the description above
+                  excluded_task_count:
+                    type: integer
+                    description: Summed across projects; tasks without both planned dates
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        project_id: { type: string, format: uuid }
+                        project_name: { type: string }
+                        task_id: { type: string, format: uuid }
+                        task_name: { type: string }
+                        status:
+                          type: string
+                          enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED, CANCELLED]
+                        work_type: { type: string }
+                        duration_days: { type: integer }
+                        earliest_start: { type: string, format: date }
+                        earliest_finish: { type: string, format: date }
+                        latest_start: { type: string, format: date }
+                        latest_finish: { type: string, format: date }
+                        total_float_days: { type: integer }
+                        is_critical: { type: boolean }
+                        assigned_to: { type: [string, 'null'], format: uuid }
+        '403':
+          description: The caller's role is not in TASK_READ_ROLES
+
+  /projects/{projectId}/task-dependencies:
+    parameters:
+      - { in: path, name: projectId, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: List the project schedule network edges
+      operationId: listTaskDependencies
+      responses:
+        '200':
+          description: Dependency edges
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TaskDependency' }
+        '403':
+          description: The caller's role is not in TASK_READ_ROLES
+    post:
+      summary: Add one dependency edge
+      description: |
+        Rejected with 422 when the edge would create a cycle (COS-TASK-003) or when its two tasks
+        are not both in this project (COS-TASK-004), and with 404 when either task does not exist
+        in the calling tenant (COS-TASK-002).
+
+        Neither rule can be a database constraint — a CHECK cannot see a graph — so both are
+        enforced in the service before the row is written.
+      operationId: addTaskDependency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [predecessor_task_id, successor_task_id]
+              properties:
+                predecessor_task_id: { type: string, format: uuid }
+                successor_task_id: { type: string, format: uuid }
+                dependency_type:
+                  type: string
+                  enum: [FS, SS, FF, SF]
+                  default: FS
+                lag_days:
+                  type: integer
+                  default: 0
+                  minimum: -3650
+                  maximum: 3650
+                  description: Signed — a negative value is a lead
+      responses:
+        '201':
+          description: Edge created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDependency' }
+        '404':
+          description: A named task does not exist in this tenant (COS-TASK-002)
+        '422':
+          description: Cycle (COS-TASK-003) or cross-project edge (COS-TASK-004)
+
+  /task-dependencies/{dependencyId}:
+    delete:
+      summary: Remove one dependency edge
+      operationId: removeTaskDependency
+      parameters:
+        - in: path
+          name: dependencyId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Edge removed
+        '404':
+          description: No such edge in this tenant (COS-TASK-005)
+
+  # ── Spatial hierarchy + asset/unit CRUD (Phase 3, 2026-07-05) ──
+  # RBAC: read = any authenticated tenant user; write = PROJECT_MANAGER / TENANT_ADMIN. No Kafka events.
+  /projects/{projectId}/buildings:
+    parameters:
+      - { in: path, name: projectId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a building under a project
+      operationId: createBuilding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBuildingRequest' }
+      responses:
+        '201':
+          description: Building created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Building' }
+        '403':
+          description: Insufficient role
+        '404':
+          description: Parent project not found (COS-BLDG-002)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CosError' }
+    get:
+      summary: List buildings in a project (paginated)
+      operationId: listBuildings
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated building list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Building' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /buildings/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get building by ID
+      operationId: getBuilding
+      responses:
+        '200':
+          description: Building detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Building' }
+        '404':
+          description: Not found (COS-BLDG-001)
+    patch:
+      summary: Update building metadata
+      operationId: updateBuilding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateBuildingRequest' }
+      responses:
+        '200':
+          description: Updated building
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Building' }
+        '403':
+          description: Insufficient role
+        '404':
+          description: Not found (COS-BLDG-001)
+    delete:
+      summary: Delete a building
+      operationId: deleteBuilding
+      responses:
+        '204':
+          description: Building deleted
+        '403':
+          description: Insufficient role
+        '404':
+          description: Not found (COS-BLDG-001)
+
+  /buildings/{buildingId}/floors:
+    parameters:
+      - { in: path, name: buildingId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a floor under a building
+      operationId: createFloor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateFloorRequest' }
+      responses:
+        '201':
+          description: Floor created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Floor' }
+        '403':
+          description: Insufficient role
+        '404':
+          description: Parent building not found (COS-FLOR-002)
+    get:
+      summary: List floors in a building (paginated)
+      operationId: listFloors
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated floor list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Floor' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /floors/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get floor by ID
+      operationId: getFloor
+      responses:
+        '200':
+          description: Floor detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Floor' }
+        '404': { description: Not found (COS-FLOR-001) }
+    patch:
+      summary: Update floor metadata
+      operationId: updateFloor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateFloorRequest' }
+      responses:
+        '200':
+          description: Updated floor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Floor' }
+        '404': { description: Not found (COS-FLOR-001) }
+        '403':
+          description: Insufficient role
+    delete:
+      summary: Delete a floor
+      operationId: deleteFloor
+      responses:
+        '204': { description: Floor deleted }
+        '404': { description: Not found (COS-FLOR-001) }
+
+        '403':
+          description: Insufficient role
+  /floors/{floorId}/rooms:
+    parameters:
+      - { in: path, name: floorId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a room under a floor
+      operationId: createRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoomRequest' }
+      responses:
+        '201':
+          description: Room created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '404':
+          description: Parent floor not found (COS-ROOM-002)
+    get:
+      summary: List rooms on a floor (paginated)
+      operationId: listRooms
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated room list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Room' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /rooms/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get room by ID
+      operationId: getRoom
+      responses:
+        '200':
+          description: Room detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '404': { description: Not found (COS-ROOM-001) }
+    patch:
+      summary: Update room metadata
+      operationId: updateRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRoomRequest' }
+      responses:
+        '200':
+          description: Updated room
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '404': { description: Not found (COS-ROOM-001) }
+    delete:
+      summary: Delete a room
+      operationId: deleteRoom
+      responses:
+        '204': { description: Room deleted }
+        '404': { description: Not found (COS-ROOM-001) }
+
+  /buildings/{buildingId}/structures:
+    parameters:
+      - { in: path, name: buildingId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a structure under a building
+      operationId: createStructure
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateStructureRequest' }
+      responses:
+        '201':
+          description: Structure created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Structure' }
+        '404':
+          description: Parent building not found (COS-STRC-002)
+    get:
+      summary: List structures in a building (paginated)
+      operationId: listStructures
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated structure list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Structure' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /structures/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get structure by ID
+      operationId: getStructure
+      responses:
+        '200':
+          description: Structure detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Structure' }
+        '404': { description: Not found (COS-STRC-001) }
+    patch:
+      summary: Update structure metadata
+      operationId: updateStructure
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateStructureRequest' }
+      responses:
+        '200':
+          description: Updated structure
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Structure' }
+        '404': { description: Not found (COS-STRC-001) }
+    delete:
+      summary: Delete a structure
+      operationId: deleteStructure
+      responses:
+        '204': { description: Structure deleted }
+        '404': { description: Not found (COS-STRC-001) }
+
+  /buildings/{buildingId}/units:
+    parameters:
+      - { in: path, name: buildingId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a unit under a building
+      operationId: createUnit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUnitRequest' }
+      responses:
+        '201':
+          description: Unit created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Unit' }
+        '404':
+          description: Parent building not found (COS-UNIT-002)
+    get:
+      summary: List units in a building (paginated)
+      operationId: listUnits
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated unit list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Unit' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /units/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get unit by ID
+      operationId: getUnit
+      responses:
+        '200':
+          description: Unit detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Unit' }
+        '404': { description: Not found (COS-UNIT-001) }
+    patch:
+      summary: Update unit metadata
+      operationId: updateUnit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateUnitRequest' }
+      responses:
+        '200':
+          description: Updated unit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Unit' }
+        '404': { description: Not found (COS-UNIT-001) }
+    delete:
+      summary: Delete a unit
+      operationId: deleteUnit
+      responses:
+        '204': { description: Unit deleted }
+        '404': { description: Not found (COS-UNIT-001) }
+
+  /projects/{projectId}/assets:
+    parameters:
+      - { in: path, name: projectId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create an asset under a project
+      operationId: createAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAssetRequest' }
+      responses:
+        '201':
+          description: Asset created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '403':
+          description: Insufficient role
+        '404':
+          description: Parent project not found (COS-ASST-002)
+    get:
+      summary: List assets in a project (paginated)
+      operationId: listAssets
+      parameters:
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated asset list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Cursor'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Asset' } }
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /assets/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get asset by ID
+      operationId: getAsset
+      responses:
+        '200':
+          description: Asset detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404': { description: Not found (COS-ASST-001) }
+    patch:
+      summary: Update asset metadata
+      operationId: updateAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateAssetRequest' }
+      responses:
+        '200':
+          description: Updated asset
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404': { description: Not found (COS-ASST-001) }
+        '403':
+          description: Insufficient role
+    delete:
+      summary: Delete an asset
+      operationId: deleteAsset
+      responses:
+        '204': { description: Asset deleted }
+        '404': { description: Not found (COS-ASST-001) }
+
+        '403':
+          description: Insufficient role

@@ -1,0 +1,93 @@
+import { IsString, IsObject, IsOptional, IsIn } from 'class-validator';
+
+export class PushItemDto {
+  @IsString()
+  entity_type!: string;
+
+  @IsString()
+  entity_id!: string;
+
+  @IsIn(['CREATE', 'UPDATE'])
+  operation!: 'CREATE' | 'UPDATE';
+
+  @IsObject()
+  payload!: Record<string, unknown>;
+
+  @IsOptional()
+  @IsString()
+  client_submitted_at?: string;
+}
+
+export type ServerSyncStatus = 'ACCEPTED' | 'CONFLICT_FLAGGED' | 'CONFLICT_REJECTED';
+
+export interface PushResponse {
+  status: ServerSyncStatus;
+  server_payload?: unknown;
+}
+
+export interface DeltaResponse {
+  updated: Record<string, unknown>[];
+  deleted: string[];
+  /**
+   * The value the client should send as `since` on its next call.
+   *
+   * When nothing was truncated this is "now". When a page was cut short it is the watermark of the
+   * truncated data instead, so the next call resumes from there rather than skipping the remainder.
+   */
+  server_timestamp: string;
+  /** True when at least one entity type had more rows than fit in this page — call again. */
+  has_more: boolean;
+  /**
+   * True when `since` predates the tombstone retention window, so the deletion list in this response
+   * is NOT complete: anything deleted and then pruned while the client was away is absent from
+   * `deleted` and would otherwise survive on the device forever.
+   *
+   * The client must drop its local copies of these entity types before applying the pages, then keep
+   * paging until `has_more` is false. `updated` is still populated — this flag qualifies the
+   * response, it does not replace it (see the note in SyncService.delta).
+   */
+  full_resync_required: boolean;
+  /** Retention window in days, sent only alongside `full_resync_required` so clients can log why. */
+  retention_days?: number;
+}
+
+/**
+ * A queued mutation that exhausted its 5 retries on the device (§17.2).
+ *
+ * `entity_type` is the CLIENT's vocabulary — `safety_incidents`, `workforce_attendance`,
+ * `inspection_results`, `material_consumption` — matching SyncManager's EXHAUSTED_NOTIFY_TYPES, not
+ * the `entity_type` of PushItemDto. They are different sets on purpose: the push types name a write
+ * handler, these name a row in §17.2's exhaustion table.
+ */
+export class ReportExhaustionDto {
+  @IsString()
+  entity_type!: string;
+
+  @IsString()
+  entity_id!: string;
+
+  @IsIn(['CREATE', 'UPDATE'])
+  operation!: 'CREATE' | 'UPDATE';
+
+  @IsObject()
+  payload!: Record<string, unknown>;
+
+  @IsOptional()
+  @IsString()
+  client_submitted_at?: string;
+
+  /** Last transport error the device saw. Free text — it is diagnostic, not control flow. */
+  @IsOptional()
+  @IsString()
+  last_error?: string;
+}
+
+/** An admin resolving a queued exhaustion (§17.2 — "reviewed and manually imported"). */
+export class ResolveExhaustionDto {
+  @IsIn(['IMPORTED', 'DISCARDED'])
+  resolution!: 'IMPORTED' | 'DISCARDED';
+
+  @IsOptional()
+  @IsString()
+  resolution_note?: string;
+}

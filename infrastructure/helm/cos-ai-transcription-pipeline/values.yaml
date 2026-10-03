@@ -1,0 +1,107 @@
+replicaCount: 2
+image:
+  repository: ''
+  tag: 'latest'
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  # uvicorn --port 8000 (services/ai-transcription-pipeline/Dockerfile CMD + EXPOSE 8000).
+  port: 8000
+  # Served by metrics.py (§31.3, QM-8) — the same port prometheus.yml scrapes for every other
+  # service. This chart deliberately omitted it while the app exported nothing; the app now does,
+  # so the port, the containerPort, the Service port and the scrape annotation land together as
+  # that comment required.
+  metricsPort: 9464
+resources:
+  # Master §Phase 17 "Resource requests/limits per FastAPI service (AI)".
+  # NOTE: sized for the DEFAULT provider (STT_PROVIDER=stub). Running STT_PROVIDER=faster_whisper
+  # loads a Whisper model into memory and will need a larger limit — size that from a measurement,
+  # not a guess, before enabling it in any environment.
+  requests:
+    cpu: '500m'
+    memory: '1Gi'
+  limits:
+    cpu: '2000m'
+    memory: '2Gi'
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+env:
+  OTEL_SERVICE_NAME: 'ai-transcription-pipeline'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel-collector:4318'
+  # Matches service.metricsPort and the prometheus.yml scrape target.
+  PROMETHEUS_PORT: '9464'
+  # main.py reads FILE_SERVICE_URL to fetch the signed URL for the audio file.
+  FILE_SERVICE_URL: 'http://file-service:8000'
+  # main.py: "stub" (default) | "faster_whisper". Keep stub until the model image is deployed.
+  STT_PROVIDER: 'stub'
+envFrom:
+  # This service currently reads no secrets (only the env keys above). Mark the secret optional so
+  # the pod starts without it; add keys here if/when it needs credentials.
+  - secretRef:
+      name: cos-ai-transcription-pipeline-secrets
+      optional: true
+serviceAccount:
+  create: true
+  name: 'cos-ai-transcription-pipeline'
+affinity:
+  # master:4650-4654 — schedule onto the pool this workload is sized for. Terraform labels each
+  # managed node group `workload=<pool>` (infrastructure/terraform/aws/modules/eks/modules).
+  #
+  # REQUIRED, not preferred: a "preferred" rule silently falls back to any node the moment the pool
+  # is full or missing, which is the failure this exists to prevent — an AI service quietly running
+  # on a t3.xlarge behaves, just slowly, and nothing reports it.
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: workload
+              operator: In
+              values: ['ai']
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cos-ai-transcription-pipeline
+          topologyKey: kubernetes.io/hostname
+# /health/live is the ONLY route this service serves besides POST /api/v1/ai/transcribe
+# (services/ai-transcription-pipeline/main.py:44). There is no /health/ready, so readiness probes
+# the same path — matching cos-ai-gateway and cos-analytics-worker. ADR-039: four charts once probed
+# a path the service did not serve and would have CrashLooped in production.
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /health/live
+    port: 8000
+  initialDelaySeconds: 15
+  periodSeconds: 5
+
+# Rolling deployment — master §Phase 17: surge by one, never go unavailable. maxUnavailable MUST
+# stay 0: any other value trades zero-downtime for a faster rollout, which is the opposite of what
+# the spec chose. Overridable per environment, but prod must not relax it.
+strategy:
+  type: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0
+
+# The ai pool is tainted workload=ai:NoSchedule so ordinary web pods cannot pack onto the expensive
+# instances these services are sized for. The taint keeps others OUT; this toleration is what lets
+# this service IN. nodeAffinity above is the other half — without it this pod merely MAY sit there.
+tolerations:
+  - key: workload
+    operator: Equal
+    value: ai
+    effect: NoSchedule

@@ -1,0 +1,98 @@
+# Construction OS — Mobile App (React Native + Expo)
+
+**Runtime:** React Native + Expo (managed workflow)  
+**Platform:** iOS / Android smartphone — **online + offline**  
+**Phase:** Phase 10 (offline engine), Phase 1–7 (feature screens per role)
+
+## Purpose
+
+Smartphone-only native application for all roles. Offline-first: all actions queue locally and sync when
+connectivity returns. Do NOT use on tablet — tablet users should use the web app (online) or PWA (offline).
+
+## Local storage
+
+- **Drizzle ORM on `expo-sqlite`** (`cos_offline_v2.db`) — ALL `local_*` business tables
+  (site_reports, tasks, issues, photos, photo_annotations, attendance, incidents,
+  safety_checklists, material_consumptions, projects). Reactive reads via `useLiveQuery`; schema by
+  versioned runtime DDL (`PRAGMA user_version`). See ADR-048 — it replaced WatermelonDB on
+  2026-07-04, and reintroducing WatermelonDB is prohibited (`context.md` §Never)
+- **expo-sqlite directly** — ONLY for the `sync_queue` infrastructure table, which keeps its own
+  handle (`cos_sync_queue.db`)
+- **Never** IndexedDB in React Native (browser API — unavailable in RN)
+
+Purchase orders are **not** stored here: §17.4 keeps them online-required, read-cache only.
+
+## Offline sync
+
+`SyncManager` class (Phase 10) handles:
+
+- Delta sync: `GET /api/v1/sync/delta?since=...`
+- Queue processing: FIFO, exponential backoff, max 3 retries
+- Conflict resolution: entity-specific strategies (Phase 6 spec)
+
+## Public API
+
+This app is a standalone deployable — not a library. The building blocks below are shared across all feature screens.
+
+**Components** (`src/components/`):
+
+| Component           | Description                                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `<SyncPill />`      | Top-bar glyph carrying every sync state. Offline is not separate — writes enqueue and it shows the pending count (§32.7, 2026-08-06) |
+| `<SyncStatusBar />` | Displays current sync state (syncing / synced / pending / error)                                                                     |
+| `<ConflictBadge />` | Badge for unresolved sync conflicts; accepts `onPress` handler                                                                       |
+
+**Hooks** (`src/hooks/`):
+
+| Hook                 | Returns         | Description                                        |
+| -------------------- | --------------- | -------------------------------------------------- |
+| `useNetworkStatus()` | `NetworkStatus` | Current network reachability state                 |
+| `usePendingCount()`  | `number`        | Count of records pending sync upload               |
+| `useSyncStatus()`    | `SyncStatus`    | Current sync engine state                          |
+| `useConflicts()`     | `Conflict[]`    | Unresolved conflict records from the offline store |
+
+**Sync infrastructure** (`src/sync/`):
+
+| Export                                                  | Description                                                                             |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `SyncManager`                                           | Orchestrates delta sync, retry, and conflict resolution                                 |
+| `DeltaSyncClient`                                       | HTTP client for `GET /api/v1/sync/delta`                                                |
+| `PhotoUploadQueue`                                      | Queues and uploads offline-captured photos                                              |
+| `ConflictHandler`                                       | Entity-specific conflict strategies (LAST_WRITE_WINS / FIELD_LEVEL_MERGE / SERVER_WINS) |
+| `registerBackgroundSyncTask` / `scheduleBackgroundSync` | Expo background-fetch task registration                                                 |
+
+**API client** (`src/api/client.ts`):
+
+| Export          | Description                                                  |
+| --------------- | ------------------------------------------------------------ |
+| `apiClient`     | Axios instance with auth token interceptor and offline queue |
+| `fetchDelta<T>` | Typed delta sync fetch                                       |
+| `get<T>`        | Typed GET request                                            |
+| `mutate<T>`     | Typed POST/PUT/DELETE with offline queue                     |
+
+## Dependencies
+
+- Backend REST API (`/api/v1/*`)
+- Expo Push Notifications (APNs + FCM via expo-server-sdk — not direct FCM)
+
+## Configuration
+
+```bash
+EXPO_PUBLIC_API_URL=http://localhost:3000/api/v1
+EXPO_PUBLIC_KEYCLOAK_URL=http://localhost:8080
+```
+
+## Usage
+
+```bash
+pnpm --filter @cos/mobile dev       # Start Expo dev server
+pnpm --filter @cos/mobile build     # EAS Build
+```
+
+## Mobile UX rules (spec §32.7)
+
+- Minimum tap target: 44px (WCAG AAA), recommended 52px primary buttons
+- No tables → use cards
+- Max 3 navigation levels
+- No modal-on-modal → use bottom sheets
+- Primary color: `#0066FF` (outdoor visibility, not `#2563EB`)

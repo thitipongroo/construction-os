@@ -1,0 +1,63 @@
+{
+  "$schema": "https://v2-10-12.turborepo.dev/schema.json",
+  "ui": "tui",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig*.json", "package.json"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "test/**", "tsconfig*.json"],
+      "outputs": ["coverage/**"]
+    },
+    "test:unit": {
+      "inputs": ["src/**", "test/**", "tsconfig*.json"],
+      "outputs": ["coverage/**"]
+    },
+    "test:cov": {
+      "inputs": ["src/**", "test/**", "tsconfig*.json", "jest.config*"],
+      "outputs": ["coverage/**"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "test/**", "tsconfig*.json"],
+      "outputs": []
+    },
+    "test:workflows": {
+      "inputs": ["src/**", "tsconfig*.json", "jest.workflows.config*"],
+      "outputs": []
+    },
+    "test:mutation": {
+      "inputs": ["src/**", "tsconfig*.json", "jest.config*", "stryker.config*"],
+      "outputs": ["reports/mutation/**"]
+    },
+    "lint": {
+      "inputs": ["src/**", "*.ts", "*.js", ".eslintrc*", "eslint.config*"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "cache": false
+    },
+    "type-check": {
+      "inputs": ["src/**", "tsconfig*.json"],
+      "outputs": []
+    },
+    "clean": {
+      "cache": false
+    },
+    "migrate": {
+      "cache": false
+    },
+    "seed": {
+      "cache": false,
+      "dependsOn": ["migrate"]
+    }
+  }
+}

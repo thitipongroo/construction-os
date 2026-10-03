@@ -1,0 +1,283 @@
+/* Tailwind v4: load the existing JS config (§32.7 tokens) via @config, then import the
+   framework. Path is relative to this CSS file (src/app/ → apps/web/tailwind.config.js). */
+@config "../../tailwind.config.js";
+@import 'tailwindcss';
+
+/*
+ * Design tokens — mirrors docs/specifications/32-implementation-specifications.md §32.7
+ * (web/PWA tier). Mobile (--mobile-*) tokens are React Native only and excluded here.
+ * Tailwind theme (tailwind.config.js) references these variables for colours + radius.
+ */
+:root {
+  /* Brand colour tokens (web/PWA + desktop) */
+  --cos-navy: #0b1020; /* Infrastructure Core — wordmark, headers, dark UI */
+  --cos-blue: #2563eb; /* System Blue — CTAs, active states, navigation */
+  --cos-cyan: #06b6d4; /* AI Cyan — AI modules, insights, event highlights */
+  --cos-gray: #64748b; /* Steel Gray — secondary text, borders, inactive */
+  --cos-white: #f8fafc; /* Concrete White — page backgrounds, surfaces, reports */
+
+  /* Dark theme tokens (applied under .dark) */
+  --cos-dark-bg: #020617;
+  --cos-dark-surface: #0f172a;
+  --cos-dark-elevated: #111827;
+  --cos-dark-text: #f8fafc;
+  --cos-dark-muted: #94a3b8;
+  --cos-dark-blue: #2563eb;
+  --cos-dark-cyan: #22d3ee;
+  --cos-dark-success: #10b981;
+  --cos-dark-warning: #f59e0b;
+  --cos-dark-danger: #ef4444;
+  /* Wired into web on 2026-09-14 for the SYSTEM_ADMIN panel, values copied from
+     .claude/rules/design-tokens.md (global web + mobile tokens) — not from the Stitch drawings. */
+  --cos-dark-outline: #46464c;
+  --cos-dark-surface-container: #102034;
+  --cos-dark-surface-container-low: #0b1c30;
+  --cos-dark-surface-container-high: #1b2b3f;
+  --cos-dark-surface-bright: #2a3a4f;
+
+  /* SYSTEM_ADMIN operator panel — the Stitch drawings' OWN values (product-owner decision 2026-09-15,
+     revision R10; §32.7 "mockups are authoritative for style"). The panel had used the nearest global
+     token instead (#020617 for the drawing's #031427, cyan for its primary #b4c5ff) and did not look
+     like its drawing. A value the global set already holds is an alias to it, not a second copy. Tenant List & DB Provisioning (screen 013fc8f09450…) — its tailwind.config colours: */
+  --cos-op-surface: #031427;
+  --cos-op-container-lowest: #000f21;
+  --cos-op-container-low: var(--cos-dark-surface-container-low); /* #0b1c30 */
+  --cos-op-container: var(--cos-dark-surface-container); /* #102034 */
+  --cos-op-container-high: var(--cos-dark-surface-container-high); /* #1b2b3f */
+  --cos-op-container-highest: #26364a;
+  --cos-op-outline: #8d90a0;
+  --cos-op-outline-variant: #434655;
+  /* the drawing loads @tailwindcss/forms, which borders a text input in its gray-500 */
+  --cos-op-field-border: #6b7280;
+  --cos-op-pending: var(--cos-dark-muted); /* sync-pending #94a3b8 */
+  /* Create Tenant - Modal Overlay (screen 00b09850702f…, R13). The drawing uses the Tailwind v3 CDN palette; this
+     app's Tailwind v4 palette differs, so its shades are carried here as their v3 hex values. */
+  --cos-op-modal-header: #0c2037;
+  --cos-op-modal-footer: #071728;
+  --cos-op-modal-field: #071322;
+  --cos-op-modal-notice: #081525;
+  --cos-op-modal-hover: #0c1e33;
+  --cos-op-ok: #34d399; /* emerald-400 */
+  --cos-op-ok-line: var(--cos-dark-success); /* emerald-500 #10b981 */
+  --cos-op-tier: var(--cos-gray); /* slate-500 #64748b */
+  --cos-op-enterprise: #60a5fa; /* blue-400 */
+  --cos-op-cyan: var(--cos-cyan); /* cyan-500 #06b6d4 */
+  --cos-op-vpc: #083344; /* cyan-950 */
+  --cos-op-vpc-ink: #67e8f9; /* cyan-300 */
+  --cos-op-vpc-line: #155e75; /* cyan-800 */
+  --cos-op-port: #022c22; /* emerald-950 */
+  --cos-op-port-line: #065f46; /* emerald-800 */
+  --cos-op-cta-shadow: #1e3a8a; /* blue-900 */
+
+  /* The Tailwind v3 default-palette shades the SYSTEM_ADMIN Stitch drawings use (R17). This app runs Tailwind v4,
+     whose palette has different values under the same names, so the v3 values are carried here and used as
+     `cos-v3-<colour>-<shade>`; never write `bg-red-400` for a drawing's `bg-red-400`. */
+  --cos-v3-slate-100: #f1f5f9;
+  --cos-v3-slate-200: #e2e8f0;
+  --cos-v3-slate-300: #cbd5e1;
+  --cos-v3-slate-400: #94a3b8;
+  --cos-v3-slate-500: #64748b;
+  --cos-v3-slate-600: #475569;
+  --cos-v3-slate-700: #334155;
+  --cos-v3-slate-800: #1e293b;
+  --cos-v3-slate-900: #0f172a;
+  --cos-v3-slate-950: #020617;
+  --cos-v3-red-200: #fecaca;
+  --cos-v3-red-400: #f87171;
+  --cos-v3-red-500: #ef4444;
+  --cos-v3-red-600: #dc2626;
+  --cos-v3-red-700: #b91c1c;
+  --cos-v3-red-800: #991b1b;
+  --cos-v3-red-900: #7f1d1d;
+  --cos-v3-red-950: #450a0a;
+  --cos-v3-rose-300: #fda4af;
+  --cos-v3-rose-400: #fb7185;
+  --cos-v3-rose-800: #9f1239;
+  --cos-v3-rose-950: #4c0519;
+  --cos-v3-amber-200: #fde68a;
+  --cos-v3-amber-300: #fcd34d;
+  --cos-v3-amber-400: #fbbf24;
+  --cos-v3-amber-500: #f59e0b;
+  --cos-v3-amber-700: #b45309;
+  --cos-v3-amber-800: #92400e;
+  --cos-v3-amber-950: #451a03;
+  --cos-v3-blue-300: #93c5fd;
+  --cos-v3-blue-400: #60a5fa;
+  --cos-v3-blue-500: #3b82f6;
+  --cos-v3-blue-600: #2563eb;
+  --cos-v3-blue-800: #1e40af;
+  --cos-v3-blue-900: #1e3a8a;
+  --cos-v3-cyan-300: #67e8f9;
+  --cos-v3-cyan-400: #22d3ee;
+  --cos-v3-cyan-500: #06b6d4;
+  --cos-v3-cyan-700: #0e7490;
+  --cos-v3-cyan-800: #155e75;
+  --cos-v3-cyan-950: #083344;
+  --cos-v3-emerald-300: #6ee7b7;
+  --cos-v3-emerald-400: #34d399;
+  --cos-v3-emerald-500: #10b981;
+  --cos-v3-emerald-600: #059669;
+  --cos-v3-emerald-800: #065f46;
+  --cos-v3-emerald-950: #022c22;
+  --cos-v3-green-600: #16a34a;
+  --cos-v3-purple-300: #d8b4fe;
+  --cos-v3-purple-400: #c084fc;
+  --cos-v3-purple-500: #a855f7;
+  /* Header / footer band of the R17 row-action modals (Stitch `#081525`). */
+  --cos-op-dialog-edge: #081525;
+  /* R17 row-action modals — the drawings' one-off values, named by where they are drawn. */
+  --cos-op-assign-edge: #1e3d64; /* Assign DB: panel border */
+  --cos-op-assign-head: #081729; /* Assign DB: header band */
+  --cos-op-assign-head-line: #1c395c; /* Assign DB: header rule */
+  --cos-op-assign-code: #0c223c; /* Assign DB: code chip */
+  --cos-op-assign-code-line: #1b3d64; /* Assign DB: code chip border */
+  --cos-op-assign-close-hover: #152e4d; /* Assign DB: close hover */
+  --cos-op-assign-gates-line: #1d3a5e; /* Assign DB: checklist box border */
+  --cos-op-assign-gate: #0b1f36; /* Assign DB: checklist card */
+  --cos-op-assign-gate-line: #1e4068; /* Assign DB: checklist card border */
+  --cos-op-assign-field: #061626; /* Assign DB: inputs */
+  --cos-op-assign-field-line: #1f4068; /* Assign DB: input border */
+  --cos-op-assign-pill: #0e2746; /* Assign DB: port pill */
+  --cos-op-assign-pill-line: #214c7d; /* Assign DB: port pill border */
+  --cos-op-assign-foot: #071626; /* Assign DB: footer band */
+  --cos-op-assign-foot-line: #1c3858; /* Assign DB: footer rule */
+  --cos-op-assign-cancel: #0f243b; /* Assign DB: cancel */
+  --cos-op-assign-cancel-hover: #163554; /* Assign DB: cancel hover */
+  --cos-op-assign-cancel-line: #214368; /* Assign DB: cancel border */
+  --cos-op-deact-close-hover: #1a2b40; /* Deactivate: close hover */
+  --cos-op-deact-cancel: #0f243a; /* Deactivate: cancel */
+  --cos-op-deact-cancel-hover: #163352; /* Deactivate: cancel hover */
+  --cos-op-mark-confirm-hover: #1d4ed8; /* Mark Contracted: confirm hover (blue-700) */
+  --cos-op-high-privilege: #ff3b30; /* Mark Contracted: HIGH PRIVILEGE tag (the drawing's #ff3b30) */
+  /* R17 Tenant Detail & Provisioning Console (screen 01955db7b7cd…) — its one-off values. */
+  --cos-op-detail-panel: #081729; /* panel */
+  --cos-op-detail-head: #05111f; /* header / footer band, inset code wells */
+  --cos-op-detail-head-line: #1a2d45; /* header rule */
+  --cos-op-detail-chip: #0f2136; /* realm chip */
+  --cos-op-detail-chip-line: #203650; /* realm chip border */
+  --cos-op-detail-well: #0b1b2d; /* zone pill, close button */
+  --cos-op-detail-well-line: #1c324c; /* zone pill border */
+  --cos-op-detail-close-hover: #162a42; /* close hover; vault well border */
+  --cos-op-detail-close-line: #1f3652; /* close border */
+  --cos-op-detail-kpi-band: #061424; /* KPI band, metric wells */
+  --cos-op-detail-kpi-band-line: #14263b; /* KPI band rule, bar track */
+  --cos-op-detail-kpi: #0a1b2e; /* KPI card */
+  --cos-op-detail-kpi-line: #1b314d; /* KPI card border */
+  --cos-op-detail-tabs: #08182b; /* tab bar */
+  --cos-op-detail-tabs-line: #172c44; /* tab bar rule */
+  --cos-op-detail-body: #071526; /* scrolling body */
+  --cos-op-detail-card-line: #1b324f; /* card border */
+  --cos-op-detail-uri-line: #1f3757; /* URI well border */
+  --cos-op-detail-copy-hover: #14273d; /* copy button hover */
+  --cos-op-detail-well-edge: #172d47; /* metric well border */
+  --cos-op-detail-ops: #0a1829; /* operational card */
+  --cos-op-detail-op: #0e2136; /* operational button / footer Close */
+  --cos-op-detail-op-hover: #152e4a; /* operational button hover */
+  --cos-op-detail-op-line: #213a5a; /* operational button border */
+  --cos-op-detail-foot-line: #182c42; /* footer rule */
+  --cos-op-detail-close2-hover: #162d47; /* footer Close hover */
+  --cos-op-detail-close2-line: #213c5e; /* footer Close border */
+  --cos-op-mig-band: #071729; /* R17 Data Migrations: ledger header / footer band */
+  --cos-op-warning: #ff9500; /* R17 Global Audit Log: HIGH-PRIVILEGE card + migration-gate chip (the drawing's mobile-warning) */
+  --cos-op-set-head: #162032; /* R17 System Settings: panel header band */
+  --cos-op-set-thead: #121a2b; /* R17 System Settings: tier table header */
+  --cos-op-on-surface: #d3e4fe;
+  --cos-op-on-surface-variant: #c3c6d7;
+  --cos-op-primary: #b4c5ff;
+  --cos-op-on-primary: #002a78;
+  --cos-op-primary-container: var(--cos-blue); /* #2563eb */
+  --cos-op-on-primary-container: #eeefff;
+  --cos-op-secondary: #4cd7f6;
+  --cos-op-secondary-container: #03b5d3;
+  --cos-op-on-secondary-container: #00424e;
+  --cos-op-success: #00c853;
+  --cos-op-gate: #ffd60a;
+  --cos-op-on-gate: #161b2b;
+  --cos-op-error: #ffb4ab;
+  --cos-op-error-container: #93000a;
+  --cos-op-on-error-container: #ffdad6;
+
+  /* Web border-radius tokens */
+  --web-radius-sm: 4px;
+  --web-radius-md: 8px;
+  --web-radius-lg: 12px;
+  --web-radius-xl: 16px;
+
+  /*
+   * <LoadingState /> glows (§32.7 "Exception 2 — loading states"; ADR-055; reference
+   * mockup/desktop/00_loading). Declared as tokens rather
+   * than written inline: the mockup states them as raw rgba, and §32.7 "Tokens only" forbids a
+   * hardcoded hex in a component. Each derives its colour from the brand token via color-mix, so
+   * retinting --cos-blue / --cos-cyan retints the glow with it.
+   */
+  --cos-glow-ai: 0 0 20px color-mix(in srgb, var(--cos-cyan) 12%, transparent);
+  --cos-glow-bar-blue: 0 0 8px color-mix(in srgb, var(--cos-blue) 55%, transparent);
+  --cos-glow-bar-cyan: 0 0 8px color-mix(in srgb, var(--cos-cyan) 55%, transparent);
+}
+
+.dark {
+  /* The dark tier runs its own cyan (--cos-dark-cyan), so the glows follow it. */
+  --cos-glow-ai: 0 0 20px color-mix(in srgb, var(--cos-dark-cyan) 12%, transparent);
+  --cos-glow-bar-cyan: 0 0 8px color-mix(in srgb, var(--cos-dark-cyan) 55%, transparent);
+}
+
+/*
+ * <LoadingState /> motion (§32.7 "Exception 2 — loading states"; ADR-055).
+ * Named cos-* so they cannot collide with a Tailwind built-in animation.
+ * Decorative: prefers-reduced-motion stops them below.
+ *
+ * The desktop mockup's `ai` variant carries NO scan-line and NO waveform — it signals work with a
+ * glow, a pulsing processor glyph and a ping dot instead (product-owner decision 2026-08-17). The
+ * cos-scan / cos-waveform keyframes that stood here served only the old web `ai` motif and went
+ * with it; the mobile app keeps its own scan-line + waveform in React Native `Animated`, not CSS.
+ */
+
+/*
+ * Indeterminate progress: a bright segment sweeps the track, so a bar with no honest percentage is
+ * still visibly working and nothing invents a figure it does not have (ADR-055 honest-data policy).
+ */
+@keyframes cos-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+/* WCAG 2.2 AA (spec §20.8) — a loading state must not animate for users who opt out. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer base {
+  body {
+    background-color: var(--cos-white);
+    color: var(--cos-navy);
+    font-size: 14px; /* §32.7 base unit (compact enterprise SaaS standard) */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Dark theme — toggled via <html class="dark"> (tokens from §32.7 Dark Theme) */
+  .dark body {
+    background-color: var(--cos-dark-bg);
+    color: var(--cos-dark-text);
+  }
+}
+
+/* R13 / R17 — while a panel modal (Create Tenant, the row actions, Tenant Detail, Audit Log) is open: the panel underneath is dimmed and softened as the Stitch
+   "Create Tenant - Modal Overlay" draws it (`blur-[1px] opacity-70`), and no migration-gate banner is drawn. */
+body:has([data-admin-modal]) [data-admin-shell] {
+  filter: blur(1px);
+  opacity: 0.7;
+}
+body:has([data-admin-modal]) [data-gate-banner] {
+  display: none;
+}

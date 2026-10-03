@@ -1,0 +1,1721 @@
+openapi: '3.1.0'
+info:
+  title: Construction OS — Tenant API
+  version: '1.0.0'
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Tenant lifecycle and user management for Construction OS.
+
+    - Tenant lifecycle endpoints (`/admin/tenants/*`) require `SYSTEM_ADMIN` role.
+    - User management endpoints (`/api/v1/users/*`) require `TENANT_ADMIN` role.
+
+    All operations work on the `platform` schema (cross-tenant identity tables).
+
+    **Reviewed 2026-08-31** against the module's controllers at the origin/develop merge. The source
+    changed in that merge only where the package restructure moved import paths — `JwtAuthGuard` and
+    `JwtPayload` from `modules/identity/` to `shared/` — with no route, parameter, request body or
+    response shape altered. This line records the comparison the freshness gate asks for, which
+    compares commit timestamps and cannot tell an import move from an API change.
+servers:
+  - url: /api/v1
+    description: Current version — relative, so the document works behind whatever host serves it
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # Shared by the SYSTEM_ADMIN audit-log reads (R17.4 / R17.6).
+  parameters:
+    AuditTenantIdPath:
+      name: tenantId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AuditTenantIdFilter:
+      name: tenantId
+      in: query
+      required: false
+      description: |
+        Rows whose `audit_logs.tenant_id` is this tenant — the tenant the action was recorded AGAINST.
+        For `tenant.*` actions that is the target tenant, not the operator's home tenant; for a global
+        audit read with no tenant filter it is the reader's own tenant.
+      schema:
+        type: string
+        format: uuid
+    AuditActorId:
+      name: actorId
+      in: query
+      required: false
+      description: Rows whose `actor_id` is this user.
+      schema:
+        type: string
+        format: uuid
+    AuditAction:
+      name: action
+      in: query
+      required: false
+      description: Exact action (`tenant.deactivate`), or a prefix when the value ends with a dot (`tenant.`).
+      schema:
+        type: string
+        maxLength: 255
+    AuditFrom:
+      name: from
+      in: query
+      required: false
+      description: |
+        ISO 8601 date (00:00 UTC) or date-time with `Z` or an offset, to the millisecond; inclusive
+        (`occurred_at >= from`). A date-time without an offset, a signed year or a finer fraction is a 400.
+      schema:
+        type: string
+        example: '2026-09-01'
+    AuditTo:
+      name: to
+      in: query
+      required: false
+      description: |
+        ISO 8601 date (00:00 UTC) or date-time with `Z` or an offset, to the millisecond; EXCLUSIVE
+        (`occurred_at < to`). For a whole last day, send the next day.
+      schema:
+        type: string
+        example: '2026-09-16'
+    AuditQ:
+      name: q
+      in: query
+      required: false
+      description: |
+        Case-insensitive substring over `action`, the actor's email and `metadata.justification`.
+        Matched literally — `%` and `_` are not wildcards. Trimmed; empty means no search.
+      schema:
+        type: string
+        maxLength: 200
+    AuditCursor:
+      name: cursor
+      in: query
+      required: false
+      description: The previous page's `next_cursor`, unchanged.
+      schema:
+        type: string
+        maxLength: 200
+    AuditLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+
+  headers:
+    XExportRowCap:
+      description: The most rows the export returns (50000).
+      schema:
+        type: integer
+    XExportTruncated:
+      description: '`true` when more rows matched than the cap; the file then holds the newest of them.'
+      schema:
+        type: boolean
+
+  schemas:
+    TenantSettings:
+      type: object
+      properties:
+        variance_alert_threshold:
+          type: string
+          description: DECIMAL string (%)
+        retention_percentage:
+          type: string
+          description: DECIMAL string (%)
+        line_channel_token:
+          type: [string, 'null']
+        notifications_enabled:
+          type: boolean
+    AdminJustificationRequest:
+      type: object
+      required: [justification]
+      properties:
+        justification:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: |
+            Required. Why the SYSTEM_ADMIN is taking this action (§6.7 "mandatory justification
+            string"). Trimmed before the length check. Stored in `platform.audit_logs.metadata`.
+          example: Customer signed the enterprise contract on 2026-09-12 (ticket OPS-4412).
+
+    CreateTenantRequest:
+      type: object
+      required: [tenantCode, tenantName, planType, justification]
+      properties:
+        justification:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: |
+            Required. Why the SYSTEM_ADMIN is taking this action (§6.7 "mandatory justification
+            string"). Trimmed before the length check. Stored in `platform.audit_logs.metadata`.
+          example: Customer signed the enterprise contract on 2026-09-12 (ticket OPS-4412).
+        tenantCode:
+          type: string
+          pattern: '^[a-z0-9_]{2,50}$'
+          description: Unique slug identifier for the tenant (e.g. acme_corp)
+          example: acme_corp
+        tenantName:
+          type: string
+          minLength: 2
+          maxLength: 255
+          example: ACME Construction Co.
+        planType:
+          type: string
+          enum: [STARTER, PROFESSIONAL, ENTERPRISE]
+        dedicatedDbUrl:
+          type: string
+          maxLength: 500
+          description: |
+            Optional. PostgreSQL connection URL for the tenant's dedicated database.
+            For ENTERPRISE tenants where the dedicated DB is already provisioned at creation time.
+            If omitted, the tenant uses the shared DB.
+            Can also be assigned later via PATCH /admin/tenants/{tenantId}/dedicated-db.
+          example: 'postgresql://user:pass@enterprise-db.example.com:5432/tenantdb'
+        dataRegion:
+          type: string
+          enum: [ap-southeast-7, ap-southeast-1, eu-west-1]
+          default: ap-southeast-1
+          description: |
+            Optional. Data-residency region (§5.6), assigned at provisioning and immutable after the
+            first data write. Thai tenants -> ap-southeast-7, EU -> eu-west-1, default -> ap-southeast-1.
+          example: ap-southeast-1
+        timezone:
+          type: string
+          default: Asia/Bangkok
+          description: |
+            Optional. IANA timezone for notification quiet hours + digest schedules (§19.3/§19.6).
+            Defaults from data_region when omitted.
+          example: Asia/Bangkok
+
+    TenantResponse:
+      type: object
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        tenantCode:
+          type: string
+          example: acme_corp
+        tenantName:
+          type: string
+          example: ACME Construction Co.
+        keycloakRealm:
+          type: string
+          example: cos-acme_corp
+        planType:
+          type: string
+          enum: [STARTER, PROFESSIONAL, ENTERPRISE]
+        isActive:
+          type: boolean
+        dataRegion:
+          type: string
+          enum: [ap-southeast-7, ap-southeast-1, eu-west-1]
+          description: Data-residency region for the tenant (§5.6).
+          example: ap-southeast-1
+        timezone:
+          type: string
+          description: IANA timezone for notification quiet hours + digest schedules (§19.3/§19.6).
+          example: Asia/Bangkok
+        createdAt:
+          type: string
+          format: date-time
+
+    TenantListRow:
+      type: object
+      description: |
+        One row of `GET /admin/tenants`, in the snake_case the endpoint actually returns.
+        `dedicated_db_url` is deliberately absent — it carries database credentials.
+      required:
+        [
+          tenant_id,
+          tenant_code,
+          tenant_name,
+          keycloak_realm,
+          plan_type,
+          is_active,
+          data_region,
+          timezone,
+          created_at,
+          updated_at,
+          dedicated_db_host,
+        ]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        tenant_code:
+          type: string
+          example: acme_corp
+        tenant_name:
+          type: string
+          example: ACME Construction Co.
+        keycloak_realm:
+          type: string
+          example: cos-acme_corp
+        plan_type:
+          type: string
+          enum: [STARTER, PROFESSIONAL, ENTERPRISE]
+        is_active:
+          type: boolean
+        data_region:
+          type: string
+          example: ap-southeast-1
+        timezone:
+          type: string
+          example: Asia/Bangkok
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        dedicated_db_host:
+          type: [string, 'null']
+          description: |
+            Hostname of the tenant's dedicated database (§20.4.1), parsed server-side from the
+            encrypted connection URL. `null` = the tenant is on the shared database.
+          example: db-ent-042.cos.internal
+
+    TenantProvisioningRow:
+      type: object
+      required: [tenant_id, workflow_state]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        workflow_state:
+          type: [string, 'null']
+          enum:
+            - CREATING_RDS
+            - RUNNING_MIGRATIONS
+            - ASSIGNING_DB
+            - AWAITING_APPROVAL
+            - ABORTING
+            - ABORTED
+            - MIGRATING_DATA
+            - VERIFYING
+            - PROVISIONING_TOPICS
+            - COMPLETED
+            - null
+          description: |
+            The run's `workflowState` query (§34.3). `null` = the run exists but did not answer within
+            5 s (no worker polling `enterprise-provisioning`) — "could not be read", never a guessed state.
+
+    ProvisioningDecisionResponse:
+      type: object
+      required: [workflowId, decision]
+      properties:
+        workflowId:
+          type: string
+          example: enterprise-provisioning-550e8400-e29b-41d4-a716-446655440000
+        decision:
+          type: string
+          enum: [approve, abort]
+
+    AuditLogRow:
+      type: object
+      description: |
+        One `platform.audit_logs` row as the SYSTEM_ADMIN audit reads return it (R17.4 / R17.6),
+        joined to its tenant and its actor. Any credential-bearing URL (`scheme://user:pass@…`, or any
+        `postgres://` / `postgresql://` URL) inside `metadata` or `justification` is replaced by
+        `[REDACTED]` before it leaves the server.
+      required:
+        [
+          log_id,
+          occurred_at,
+          tenant_id,
+          tenant_code,
+          tenant_name,
+          action,
+          resource_type,
+          resource_id,
+          actor_id,
+          actor_email,
+          actor_name,
+          ip_address,
+          user_agent,
+          justification,
+          metadata,
+        ]
+      properties:
+        log_id:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+          description: UTC, millisecond precision.
+        tenant_id:
+          type: string
+          format: uuid
+          description: The tenant the action was recorded against — for `tenant.*` actions, the target.
+        tenant_code:
+          type: string
+        tenant_name:
+          type: string
+        action:
+          type: string
+          example: tenant.deactivate
+        resource_type:
+          type: string
+          example: tenant
+        resource_id:
+          type: [string, 'null']
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        actor_email:
+          type: [string, 'null']
+        actor_name:
+          type: [string, 'null']
+        ip_address:
+          type: [string, 'null']
+        user_agent:
+          type: [string, 'null']
+        justification:
+          type: [string, 'null']
+          description: '`metadata.justification` in full; `null` when absent or blank.'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: The row's metadata; `{}` when the column is NULL.
+
+    AuditLogPage:
+      type: object
+      required: [rows, next_cursor]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogRow'
+        next_cursor:
+          type: [string, 'null']
+          description: |
+            Opaque. Pass it back as `cursor` for the next, older page; `null` on the last page. Rows are
+            ordered by `(occurred_at DESC, log_id DESC)` at the database's microsecond precision.
+
+    TenantAuditLogPage:
+      allOf:
+        - $ref: '#/components/schemas/AuditLogPage'
+        - type: object
+          required: [summary]
+          properties:
+            summary:
+              type: object
+              required: [total_30d]
+              properties:
+                total_30d:
+                  type: integer
+                  description: |
+                    Every audit row of this tenant with `occurred_at` in the last 30 × 24 h, counted
+                    before this read's own audit row is written. Ignores `q` and `cursor`.
+
+    AuditLogSummary:
+      type: object
+      required: [total, today, with_justification, privileged, privileged_7d]
+      description: All five count rows across EVERY tenant. Audit reads (`audit.*`) are rows like any other.
+      properties:
+        total:
+          type: integer
+          description: Rows with `occurred_at` in [`from`, `to`); every row when neither is given.
+        today:
+          type: integer
+          description: Rows with `occurred_at` at or after 00:00 UTC of the current day. Ignores `from` / `to`.
+        with_justification:
+          type: integer
+          description: |
+            Rows in [`from`, `to`) whose `action` starts with `tenant.` and whose
+            `metadata.justification` is present and not blank.
+        privileged:
+          type: integer
+          description: |
+            Rows in [`from`, `to`) whose `action` starts with `tenant.` — the denominator of
+            `with_justification`.
+        privileged_7d:
+          type: integer
+          description: |
+            Rows whose `action` starts with `tenant.` and whose `occurred_at` is within the last
+            7 × 24 h. Ignores `from` / `to`.
+
+    AuditLogExport:
+      type: object
+      required: [rows, row_cap, truncated]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogRow'
+        row_cap:
+          type: integer
+          example: 50000
+        truncated:
+          type: boolean
+          description: '`true` when more rows matched than `row_cap`; `rows` then holds the newest `row_cap`.'
+
+    MarkContractedRequest:
+      type: object
+      required: [justification]
+      properties:
+        justification:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: |
+            Required. Why the SYSTEM_ADMIN is taking this action (§6.7 "mandatory justification
+            string"). Trimmed before the length check. Stored in `platform.audit_logs.metadata`.
+          example: Customer signed the enterprise contract on 2026-09-12 (ticket OPS-4412).
+        contractReference:
+          type: string
+          maxLength: 255
+          description: |
+            Optional. External contract ID from CRM or contract management system.
+            Stored as-is and included in the platform.enterprise.contract_signed.v1 Kafka event.
+          example: CRM-CONTRACT-2026-00142
+
+    AssignDedicatedDbRequest:
+      type: object
+      required: [dedicatedDbUrl, justification]
+      properties:
+        justification:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: |
+            Required. Why the SYSTEM_ADMIN is taking this action (§6.7 "mandatory justification
+            string"). Trimmed before the length check. Stored in `platform.audit_logs.metadata`.
+          example: Customer signed the enterprise contract on 2026-09-12 (ticket OPS-4412).
+        dedicatedDbUrl:
+          type: string
+          maxLength: 500
+          description: |
+            PostgreSQL connection URL for the tenant's dedicated database instance.
+            Format: `postgresql://user:password@host:5432/dbname`
+            Must point to a pre-provisioned and migrated PostgreSQL instance.
+          example: postgresql://cos_user:secret@rds-acme.ap-southeast-1.rds.amazonaws.com:5432/cos_acme_corp
+
+    CosRole:
+      type: string
+      enum:
+        - SYSTEM_ADMIN
+        - TENANT_ADMIN
+        - EXECUTIVE
+        - PROJECT_MANAGER
+        - PROCUREMENT_OFFICER
+        - FINANCE
+        - SAFETY_OFFICER
+        - SITE_ENGINEER
+        - CRM_SALES_MANAGER
+        - PROC_MANAGER
+        - SITE_WORKER
+        - VIEWER
+      description: COS role assigned to the user within their tenant.
+
+    CreateUserRequest:
+      type: object
+      required: [display_name, role]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Somchai Jaidee
+        role:
+          $ref: '#/components/schemas/CosRole'
+        phone_number:
+          type: string
+          pattern: '^\+[1-9]\d{7,14}$'
+          description: |
+            Path A (OTP login). Provide phone_number OR email — never both.
+          example: '+66812345678'
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: |
+            Path B (Keycloak OIDC). Provide email OR phone_number — never both.
+          example: somchai@acme-construction.com
+        keycloak_user_id:
+          type: string
+          maxLength: 255
+          description: |
+            Optional. Keycloak UUID if the account was pre-created externally.
+            When omitted, KeycloakAdminService provisions the account automatically.
+
+    UserResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        keycloak_user_id:
+          type: string
+        email:
+          type: string
+          format: email
+          description: PII — redacted in logs; empty string for Path A (phone) users.
+        display_name:
+          type: string
+          description: PII — redacted in logs.
+        role:
+          $ref: '#/components/schemas/CosRole'
+        is_active:
+          type: boolean
+        mfa_enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaginatedUsersResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserResponse'
+        pagination:
+          type: object
+          properties:
+            limit:
+              type: integer
+            offset:
+              type: integer
+            page:
+              type: integer
+            total:
+              type: integer
+
+    ChangeRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: '#/components/schemas/CosRole'
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: COS-TENANT-001
+            message:
+              type: string
+            messageKey:
+              type: string
+            details:
+              type: object
+            traceId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+paths:
+  # ── The caller's own tenant and record, and multi-role administration ─────
+  # Written 2026-08-24. §14 User Management tabled `PATCH /users/{id}/role` (singular) only; the
+  # implemented surface is the multi-role pair below, which OQ-8 introduced.
+  /tenant:
+    get:
+      security:
+        - bearerAuth: []
+      summary: The signed-in user's own tenant
+      description: |
+        Name, code and plan for the tenant in the caller's JWT. Any authenticated role — it answers
+        "where am I", which every screen needs and no role should have to be granted.
+      operationId: getMyTenant
+      tags: [tenant]
+      responses:
+        '200':
+          description: tenant_name, tenant_code, plan_type
+        '401':
+          description: Unauthenticated
+
+  /users/me:
+    get:
+      security:
+        - bearerAuth: []
+      summary: The signed-in user's own record
+      description: |
+        Any authenticated role. Scoped by the JWT, so there is nothing to authorise.
+
+        The row carries `department` and `position` — both free-text HR fields, both nullable, and
+        `position` NULL is the ordinary case: no route sets it, it arrives by seed or HR import
+        (ADR-101). It also carries `employee_code`, LEFT-joined from `workforce.workers` and NULL for
+        every account with no worker record, which is most office roles. Clients render nothing for a
+        null rather than a placeholder.
+      operationId: getMe
+      tags: [users]
+      responses:
+        '200':
+          description: The caller's user row — roles, department, position, employee_code
+        '401':
+          description: Unauthenticated
+
+  /users/me/photo:
+    patch:
+      security:
+        - bearerAuth: []
+      summary: Set or clear the signed-in user's profile photo
+      description: |
+        Takes a File Service URL for an image already uploaded there, or `null` to clear it. The
+        image is not uploaded through this route — it is a reference, so a photo can be replaced
+        without this endpoint ever handling bytes.
+      operationId: updateMyPhoto
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                photo_url:
+                  type: [string, 'null']
+                  description: File-service URL of the uploaded image, or null to clear.
+      responses:
+        '200':
+          description: The updated user row
+        '401':
+          description: Unauthenticated
+
+  /users/me/password-reset-email:
+    post:
+      security:
+        - bearerAuth: []
+      summary: Email the signed-in user a link to set their own password
+      description: |
+        Sends Keycloak's single-use, 15-minute `UPDATE_PASSWORD` action-token email (NIST SP
+        800-63B Rev.4). The user sets the password inside Keycloak and COS never handles a
+        plaintext credential.
+
+        No role check and no request body: the target is the JWT's own `user_id`, so there is
+        nothing for a caller to point at another account.
+
+        It does NOT ask for the current password. Keycloak's Direct Grant flow denies
+        `TENANT_ADMIN` and `FINANCE` (`docs/runbooks/mfa-enforcement.md` Step 1b), and those are
+        the only two roles guaranteed to have one (§5.4.4) — so in-app verification would fail for
+        exactly the accounts it matters most for. See ADR-104.
+
+        **Path B only.** A Path A (phone/OTP) account has no email and no password, and is refused
+        with `COS-AUTH-003` rather than told a link was sent.
+      operationId: requestMyPasswordResetEmail
+      tags: [users]
+      responses:
+        '200':
+          description: The address the link was sent to
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email:
+                    type: string
+                    format: email
+        '400':
+          description: |
+            `COS-AUTH-003` — the account signs in with a phone number and a one-time code, so it
+            has no password to change and no email to send a link to.
+        '401':
+          description: Unauthenticated
+        '404':
+          description: "`COS-USER-404` — the caller's own row is gone or inactive"
+
+  /users/{userId}/roles:
+    get:
+      security:
+        - bearerAuth: []
+      summary: A user's primary and additional roles
+      description: |
+        TENANT_ADMIN only. Effective permissions are the UNION of `ROLE_PERMISSIONS` across the
+        primary role and every additional one — a user is not limited to the narrower of them.
+      operationId: getUserRoles
+      tags: [users]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Primary role plus additional roles
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Requires TENANT_ADMIN
+        '404':
+          description: User not found in this tenant
+
+    put:
+      security:
+        - bearerAuth: []
+      summary: Set a user's primary and additional roles
+      description: |
+        TENANT_ADMIN only. A full replacement, not a patch — the additional-role set sent here
+        becomes the set that exists, which is why it is `PUT`. Emits
+        `identity.user.role_changed.v1`.
+      operationId: setUserRoles
+      tags: [users]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [primary_role, additional_roles]
+              properties:
+                primary_role:
+                  type: string
+                  description: The `tenant_memberships.role` value.
+                additional_roles:
+                  type: array
+                  items: { type: string }
+      responses:
+        '204':
+          description: Roles updated
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Requires TENANT_ADMIN
+        '404':
+          description: User not found in this tenant
+
+  /users/{userId}/reset-password:
+    post:
+      security:
+        - bearerAuth: []
+      summary: Issue a one-time temporary password
+      description: |
+        TENANT_ADMIN only. Sets a temporary password on the Keycloak account — the user must change
+        it at next sign-in — and returns the plaintext ONCE, for secure manual hand-off to someone
+        who has no working email. Emits `identity.user.password_reset.v1`.
+
+        Prefer `/reset-password/email` where the user has an email on file: it never puts a
+        plaintext password in an administrator's hands.
+      operationId: resetUserPassword
+      tags: [users]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Temporary password issued — returned once and never retrievable again
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Requires TENANT_ADMIN
+        '404':
+          description: User not found in this tenant
+
+  /users/{userId}/reset-password/email:
+    post:
+      security:
+        - bearerAuth: []
+      summary: Email the user a password-reset link
+      description: |
+        TENANT_ADMIN only. Sends a single-use, 15-minute Keycloak `UPDATE_PASSWORD` action-token
+        email (NIST 800-63B Rev.4). The user sets their own password and COS never handles the
+        plaintext. Requires an email on file. Emits `identity.user.password_reset.v1` with
+        `method=email_link`.
+      operationId: sendUserPasswordResetEmail
+      tags: [users]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Reset link emailed
+        '400':
+          description: User has no email on file
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Requires TENANT_ADMIN
+        '404':
+          description: User not found in this tenant
+  /admin/tenants:
+    get:
+      operationId: getAdminTenants
+      summary: List all tenants on the platform (SYSTEM_ADMIN only — §20.4.1)
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tenant list — with the dedicated DB hostname, never its URL
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TenantListRow'
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+    post:
+      operationId: postAdminTenants
+      summary: Provision a new tenant (SYSTEM_ADMIN only)
+      description: |
+        Creates a tenant record and queues Keycloak realm creation.
+
+        Emits Kafka event: `identity.tenant.created.v1`
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+      responses:
+        '201':
+          description: Tenant provisioned — Kafka event emitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantResponse'
+        '409':
+          description: Tenant code already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+
+  /admin/tenants/{tenantId}/deactivate:
+    patch:
+      operationId: patchAdminTenantsByTenantidDeactivate
+      summary: Deactivate a tenant (SYSTEM_ADMIN only)
+      description: |
+        Sets `is_active = false`. Tenant data is preserved.
+        Emits Kafka event: `identity.tenant.deactivated.v1`
+
+        Audited as `tenant.deactivate` with the justification, in the same transaction (§6.7).
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminJustificationRequest'
+      responses:
+        '400':
+          description: Missing or invalid justification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '200':
+          description: Tenant deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Tenant deactivated
+        '404':
+          description: Tenant not found or already inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+
+  /admin/tenants/{tenantId}/dedicated-db:
+    patch:
+      operationId: patchAdminTenantsByTenantidDedicatedDb
+      summary: Assign dedicated DB to a tenant (SYSTEM_ADMIN only)
+      description: |
+        Sets `dedicated_db_url` on the tenant record. Once set, all domain queries
+        for this tenant route to the dedicated PostgreSQL instance instead of the shared DB.
+
+        Prerequisites (must be completed before calling this endpoint):
+        1. Dedicated PostgreSQL instance provisioned and reachable
+        2. All Prisma migrations applied to the dedicated DB (`prisma migrate deploy`)
+        3. Existing tenant data migrated if upgrading from shared DB
+
+        See `docs/runbooks/dedicated-db-provisioning.md` for the full provisioning runbook.
+
+        Emits Kafka event: `identity.tenant.dedicated_db_assigned.v1`
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignDedicatedDbRequest'
+      responses:
+        '200':
+          description: Dedicated DB URL assigned — tenant now routes to dedicated instance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Dedicated DB assigned
+                  tenantId:
+                    type: string
+                    format: uuid
+        '400':
+          description: Invalid dedicatedDbUrl format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+
+  /admin/tenants/{tenantId}/mark-contracted:
+    patch:
+      operationId: patchAdminTenantsByTenantidMarkContracted
+      summary: Mark Enterprise tenant as contracted (SYSTEM_ADMIN only)
+      description: |
+        Signals that an Enterprise tenant has signed a contract requiring dedicated DB isolation.
+        Starts `EnterpriseProvisioningWorkflow` via Temporal (task queue: enterprise-provisioning).
+
+        Prerequisites (enforced server-side):
+        - Tenant plan_type must be ENTERPRISE
+        - Tenant must be active (is_active = true)
+        - dedicated_db_url must be NULL (workflow not already started)
+
+        The workflow is idempotent — Temporal rejects duplicate starts for the same tenant
+        using workflowId `enterprise-provisioning-{tenantId}`.
+
+        Emits Kafka event: `platform.enterprise.contract_signed.v1`
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkContractedRequest'
+      responses:
+        '202':
+          description: Provisioning workflow started — processing asynchronously
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Enterprise provisioning workflow started
+                  workflowId:
+                    type: string
+                    example: enterprise-provisioning-550e8400-e29b-41d4-a716-446655440000
+                  tenantId:
+                    type: string
+                    format: uuid
+        '400':
+          description: |
+            Precondition failed. Possible reasons:
+            - Tenant is not ENTERPRISE plan
+            - Tenant is inactive
+            - dedicated_db_url is already set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Provisioning workflow already running or completed for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+
+  /admin/tenants/provisioning:
+    get:
+      operationId: getAdminTenantsProvisioning
+      summary: Provisioning-run state of every ENTERPRISE tenant that has one (SYSTEM_ADMIN only)
+      description: |
+        One entry per ENTERPRISE tenant with an `enterprise-provisioning-{tenantId}` run. A tenant
+        with no run is absent. Each state is read with the §34.3 `workflowState` query.
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Provisioning state per tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TenantProvisioningRow'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+
+  /admin/tenants/{tenantId}/provisioning/approve:
+    post:
+      operationId: postAdminTenantsByTenantidProvisioningApprove
+      summary: Approve a provisioning run waiting at the data-migration gate (SYSTEM_ADMIN only)
+      description: |
+        Sends the `approve` signal (§34.5). Accepted only while the run is AWAITING_APPROVAL.
+        Audited as `tenant.provisioning.approve`, in the transaction that sends the signal.
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminJustificationRequest'
+      responses:
+        '201':
+          description: Signal sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisioningDecisionResponse'
+        '400':
+          description: Missing or invalid justification, or a tenantId that is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The tenant has no provisioning run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The run is not at AWAITING_APPROVAL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The run's state could not be read, so no signal was sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/tenants/{tenantId}/provisioning/abort:
+    post:
+      operationId: postAdminTenantsByTenantidProvisioningAbort
+      summary: Abort a provisioning run waiting at the data-migration gate (SYSTEM_ADMIN only)
+      description: |
+        Sends the `abort` signal (§34.5): the run unassigns the dedicated DB and deletes the RDS
+        instance. Accepted only while the run is AWAITING_APPROVAL. Audited as
+        `tenant.provisioning.abort`, in the transaction that sends the signal.
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminJustificationRequest'
+      responses:
+        '201':
+          description: Signal sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisioningDecisionResponse'
+        '400':
+          description: Missing or invalid justification, or a tenantId that is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The tenant has no provisioning run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The run is not at AWAITING_APPROVAL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The run's state could not be read, so no signal was sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Audit-log reads (SYSTEM_ADMIN) — R17.4, R17.6, 2026-09-15 ──────────────
+  # Source: backend/src/modules/tenant/tenant-audit-log.controller.ts and admin-audit-log.controller.ts.
+  # EVERY route below is itself audited (§20.4.6, product-owner decisions D3 / D4): one
+  # platform.audit_logs row per call, action `audit.read` (list, summary) or `audit.export`,
+  # resource_type `audit_log`, the filters in metadata, written in the same transaction as the read —
+  # a read whose audit row cannot be written fails and returns nothing.
+  /admin/tenants/{tenantId}/audit-logs:
+    get:
+      operationId: getAdminTenantsByTenantidAuditLogs
+      summary: One page of a tenant's audit log, newest first — the read is audited (SYSTEM_ADMIN only)
+      description: |
+        Rows of this tenant ordered by `(occurred_at DESC, log_id DESC)`, keyset-paged. Audited as
+        `audit.read` against the tenant in the path.
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AuditTenantIdPath'
+        - $ref: '#/components/parameters/AuditCursor'
+        - $ref: '#/components/parameters/AuditLimit'
+        - $ref: '#/components/parameters/AuditQ'
+      responses:
+        '200':
+          description: The page and the tenant's 30-day count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantAuditLogPage'
+        '400':
+          description: tenantId not a UUID, limit outside 1-100, a cursor this endpoint did not issue, or an unknown parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The tenant does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The server's database connection cannot read across tenants (it is subject to RLS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/tenants/{tenantId}/audit-logs/export.csv:
+    get:
+      operationId: getAdminTenantsByTenantidAuditLogsExportCsv
+      summary: A tenant's audit log as CSV — the export is audited (SYSTEM_ADMIN only)
+      description: |
+        Every row of the tenant matching `q`, newest first, capped at **50 000 rows**. RFC 4180 with
+        CRLF line endings; a cell a spreadsheet would evaluate as a formula is prefixed with `'` and
+        quoted (CWE-1236). Columns: occurred_at, log_id, tenant_id, tenant_code, tenant_name, action,
+        resource_type, resource_id, actor_id, actor_email, actor_name, ip_address, user_agent,
+        justification, metadata (JSON text). Audited as `audit.export` against the tenant in the path.
+      tags: [tenants]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AuditTenantIdPath'
+        - $ref: '#/components/parameters/AuditQ'
+      responses:
+        '200':
+          description: The CSV file, as an attachment
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="audit-log-550e8400-e29b-41d4-a716-446655440000.csv"
+            X-Export-Row-Cap:
+              $ref: '#/components/headers/XExportRowCap'
+            X-Export-Truncated:
+              $ref: '#/components/headers/XExportTruncated'
+          content:
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: tenantId not a UUID, or an unknown parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The tenant does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The server's database connection cannot read across tenants (it is subject to RLS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/audit-logs:
+    get:
+      operationId: getAdminAuditLogs
+      summary: One page of the audit log across all tenants, filtered — the read is audited (SYSTEM_ADMIN only)
+      description: |
+        Rows of every tenant ordered by `(occurred_at DESC, log_id DESC)`, keyset-paged; filters combine
+        with AND. Audited as `audit.read` — against the `tenantId` filter's tenant when one is given,
+        otherwise against the caller's own tenant.
+      tags: [audit-logs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AuditTenantIdFilter'
+        - $ref: '#/components/parameters/AuditActorId'
+        - $ref: '#/components/parameters/AuditAction'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+        - $ref: '#/components/parameters/AuditQ'
+        - $ref: '#/components/parameters/AuditCursor'
+        - $ref: '#/components/parameters/AuditLimit'
+      responses:
+        '200':
+          description: The page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '400':
+          description: A malformed filter, `from` later than `to`, limit outside 1-100, a foreign cursor, or an unknown parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The `tenantId` filter names no tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The server's database connection cannot read across tenants (it is subject to RLS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/audit-logs/summary:
+    get:
+      operationId: getAdminAuditLogsSummary
+      summary: Counts for the Global Audit Log cards — the read is audited (SYSTEM_ADMIN only)
+      description: |
+        See `AuditLogSummary` for exactly what each figure counts. `from` / `to` bound `total`,
+        `with_justification` and `privileged` only. Audited as `audit.read` against the caller's own tenant.
+      tags: [audit-logs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+      responses:
+        '200':
+          description: The five counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogSummary'
+        '400':
+          description: A malformed date, `from` later than `to`, or an unknown parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '503':
+          description: The server's database connection cannot read across tenants (it is subject to RLS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/audit-logs/export:
+    get:
+      operationId: getAdminAuditLogsExport
+      summary: The filtered audit log as CSV or JSON — the export is audited (SYSTEM_ADMIN only)
+      description: |
+        Every row matching the filters, newest first, capped at **50 000 rows**. CSV (default) is the
+        same format as the per-tenant export; JSON is an `AuditLogExport`. Both are sent as attachments.
+        Audited as `audit.export` (metadata carries `format`) — against the `tenantId` filter's tenant
+        when one is given, otherwise against the caller's own tenant.
+      tags: [audit-logs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [csv, json]
+            default: csv
+        - $ref: '#/components/parameters/AuditTenantIdFilter'
+        - $ref: '#/components/parameters/AuditActorId'
+        - $ref: '#/components/parameters/AuditAction'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+        - $ref: '#/components/parameters/AuditQ'
+      responses:
+        '200':
+          description: The file, as an attachment
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="audit-log-2026-09-15.csv"
+            X-Export-Row-Cap:
+              $ref: '#/components/headers/XExportRowCap'
+            X-Export-Truncated:
+              $ref: '#/components/headers/XExportTruncated'
+          content:
+            text/csv:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogExport'
+        '400':
+          description: A malformed filter, `from` later than `to`, an unknown format, or an unknown parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — SYSTEM_ADMIN required
+        '404':
+          description: The `tenantId` filter names no tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The server's database connection cannot read across tenants (it is subject to RLS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── User management (TENANT_ADMIN) ──────────────────────────────────────────
+
+  /users:
+    get:
+      operationId: getUsers
+      summary: List active users in the tenant (TENANT_ADMIN only)
+      description: |
+        Returns a paginated list of all active users within the caller's tenant.
+        The tenant is resolved from the JWT `tenant_id` claim — no path parameter required.
+      tags: [users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+          description: Maximum records to return (server enforces max 200).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of records to skip (0-based).
+      responses:
+        '200':
+          description: Paginated user list with roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsersResponse'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — TENANT_ADMIN required
+
+    post:
+      operationId: postUsers
+      summary: Create a user within the tenant (TENANT_ADMIN only)
+      description: |
+        Provisions a new user in Keycloak and creates a COS user record.
+
+        Exactly one of `phone_number` (Path A — OTP login) or `email` (Path B — Keycloak OIDC)
+        must be provided. Providing both or neither returns 400.
+
+        Emits Kafka event: `identity.user.created.v1`
+      tags: [users]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: Validation error — phone_number or email required (not both)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: User with this identity (phone or email) already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — TENANT_ADMIN required
+
+  /users/{userId}/role:
+    patch:
+      operationId: patchUsersByUseridRole
+      summary: Change a user's role within the tenant (TENANT_ADMIN only)
+      description: |
+        Updates the user's role in `platform.tenant_memberships`.
+
+        Emits Kafka event: `identity.user.role_changed.v1`
+      tags: [users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeRoleRequest'
+      responses:
+        '204':
+          description: Role updated — no content returned
+        '404':
+          description: User not found in tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — TENANT_ADMIN required
+
+  /users/{userId}/deactivate:
+    patch:
+      operationId: patchUsersByUseridDeactivate
+      summary: Deactivate a user — revokes access, preserves data (TENANT_ADMIN only)
+      description: |
+        Sets `is_active = false` on the user record. The user's data is preserved.
+        Keycloak session invalidation is handled asynchronously by the downstream
+        consumer of the JWT expiry (no active session revocation in Phase 2).
+      tags: [users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deactivated — no content returned
+        '404':
+          description: User not found or already inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient role — TENANT_ADMIN required
+  /tenant/settings:
+    get:
+      operationId: getTenantSettings
+      summary: Get the current tenant settings (TENANT_ADMIN only)
+      description: Returns defaults (10.00 / 5.00 / null / true) when no row exists yet. ADR-028.
+      tags: [tenant-settings]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tenant settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSettings'
+        '403':
+          description: Insufficient role — TENANT_ADMIN required
+    patch:
+      operationId: patchTenantSettings
+      summary: Update tenant settings (partial; TENANT_ADMIN only)
+      tags: [tenant-settings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                variance_alert_threshold:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                retention_percentage:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                line_channel_token:
+                  type: string
+                  maxLength: 512
+                notifications_enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated tenant settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSettings'
+        '403':
+          description: Insufficient role — TENANT_ADMIN required

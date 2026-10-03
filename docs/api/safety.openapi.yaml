@@ -1,0 +1,294 @@
+openapi: 3.1.0
+info:
+  title: Construction OS — Safety API
+  version: 1.0.0
+  license:
+    name: Proprietary — all rights reserved
+    identifier: LicenseRef-Proprietary
+  description: |
+    Safety Officer operations (§20.7.7): incidents, work-permit approval (§15.5), safety
+    checklists, and a deterministic compliance view (ADR-027). Canonical prefix /api/v1/safety/*.
+    All endpoints require Bearer JWT (Keycloak RS256). RBAC enforced per role.
+
+    **Reviewed 2026-09-03** against `backend/src/modules/safety/` at 4bb1cdee. The only change to the
+    controller or its DTOs since this document was last written is `JwtAuthGuard` moving from
+    `../identity/guards/` to `../../shared/guards/` — an import path, not a route, a payload or a
+    status code. `SubmitInspectionDto` also moved from `../site-ops/dto/` to `../site-ops/public/`;
+    the two files differ by one import line and nothing else. `permit-expiry.service.ts` gained a
+    Kafka emission (`safety.compliance.failed.v1`), which is an event contract, not an HTTP one. This
+    line records the comparison the freshness gate asks for, which compares commit timestamps and so
+    counted the refactor as a source change.
+servers:
+  - url: /api/v1
+    description: Current version
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /safety/incidents:
+    post:
+      operationId: postSafetyIncidents
+      tags: [safety]
+      summary: Report a safety incident
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, incident_type, severity]
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                incident_type:
+                  type: string
+                severity:
+                  type: string
+                  enum: [LOW, MEDIUM, HIGH, CRITICAL]
+                task_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Incident reported
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    get:
+      operationId: getSafetyIncidents
+      tags: [safety]
+      summary: List incidents (filter by project, status, severity)
+      parameters:
+        - { name: project_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: severity, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: Paginated incidents
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /safety/incidents/{incidentId}/acknowledge:
+    patch:
+      operationId: patchSafetyIncidentsByIncidentidAcknowledge
+      tags: [safety]
+      summary: Acknowledge an incident (OPEN → IN_PROGRESS)
+      parameters:
+        - { name: incidentId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Incident acknowledged
+        '404':
+          description: Incident not found
+  /safety/permits:
+    post:
+      operationId: postSafetyPermits
+      tags: [safety]
+      summary: Create a permit request (PENDING)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, permit_type, permit_number]
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                permit_type:
+                  type: string
+                  enum: [WORK_PERMIT, SAFETY_PERMIT, DRAWING_APPROVAL, ENTRY_PERMIT]
+                permit_number:
+                  type: string
+                linked_task_id:
+                  type: string
+                  format: uuid
+                valid_from:
+                  type: string
+                  format: date
+                valid_until:
+                  type: string
+                  format: date
+                contractor_name:
+                  type: string
+                  maxLength: 255
+                  description: >-
+                    Firm performing the permitted work. Free text, NOT a vendor reference — a
+                    subcontractor crew often has no procurement.vendors record. Added 2026-08-13;
+                    optional, so a client that omits it is unaffected.
+                description:
+                  type: string
+                  maxLength: 4000
+                  description: Scope of work and safety measures. Added 2026-08-13; optional.
+      responses:
+        '201':
+          description: Permit created (PENDING)
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    get:
+      operationId: getSafetyPermits
+      tags: [safety]
+      summary: List permits (filter by project, status)
+      parameters:
+        - { name: project_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: Paginated permits
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /safety/permits/{permitId}/approve:
+    patch:
+      operationId: patchSafetyPermitsByPermitidApprove
+      tags: [safety]
+      summary: Approve a permit (§15.5; PENDING → ACTIVE; SAFETY_PERMIT needs PM final)
+      parameters:
+        - { name: permitId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier:
+                  type: string
+                  enum: [SAFETY_OFFICER, PROJECT_MANAGER, TENANT_ADMIN]
+      responses:
+        '200':
+          description: Permit approved (ACTIVE)
+        '403':
+          description: Safety permit requires PM final approval
+        '422':
+          description: Permit is not PENDING
+  /safety/permits/{permitId}/reject:
+    patch:
+      operationId: patchSafetyPermitsByPermitidReject
+      tags: [safety]
+      summary: Reject a permit (PENDING → REVOKED)
+      parameters:
+        - { name: permitId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        # NOT required — this endpoint took no body at all before 2026-08-13 and deployed clients
+        # still call it with none (or with `{}`). Adding an optional body is a non-breaking
+        # addition (QM-2), so no version bump.
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    Why the permit was rejected. Stored on the permit as revoke_reason. Omitted →
+                    NULL, which records that no reason was given rather than a blank one.
+      responses:
+        '200':
+          description: Permit rejected (REVOKED)
+        '422':
+          description: Permit is not PENDING
+  /safety/checklists:
+    get:
+      operationId: getSafetyChecklists
+      tags: [safety]
+      summary: List safety checklists (delegated to site-ops)
+      parameters:
+        - { name: project_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Checklist list
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+    post:
+      operationId: postSafetyChecklists
+      tags: [safety]
+      summary: Submit a completed safety checklist (recorded as an inspection)
+      description: >-
+        Roles: Site Worker, Site Engineer, Safety Officer, Tenant Admin. Site Worker was added
+        2026-08-08 (ADR-089) — the daily verification is the field worker's own pre-shift routine,
+        and §6.8 grants the role RW on Safety. Incident reporting is NOT widened by that decision:
+        POST /safety/incidents stays with Site Engineer / Safety Officer / Admin per §14.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, checklist_id, status, inspected_at]
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                checklist_id:
+                  type: string
+                  format: uuid
+                status:
+                  type: string
+                  enum: [PENDING, PASSED, FAILED, REQUIRES_REINSPECTION]
+                inspected_at:
+                  type: string
+                  format: date-time
+                notes:
+                  type: string
+                signature:
+                  type: array
+                  maxItems: 200
+                  description: >-
+                    The confirming signature as strokes — `[{ d, color, width }]`, `d` an SVG path in
+                    NORMALISED 0..1 coordinates (the ADR-056 annotation shape). An ATTESTATION MARK
+                    only: no PKI and no non-repudiation; the authoritative attribution is the row's
+                    `inspected_by` / `inspected_at`. Contract e-signature is ADR-058's separate
+                    PKI/VC path. RESTRICTED / personal data — see migration 20260808000002. Omit for
+                    an unsigned submission.
+                  items:
+                    type: object
+                    required: [d, color, width]
+                    properties:
+                      d: { type: string, maxLength: 4000 }
+                      color: { type: string, maxLength: 32 }
+                      width: { type: number, minimum: 0, maximum: 1 }
+      responses:
+        '201':
+          description: Checklist submitted
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
+  /safety/compliance:
+    get:
+      operationId: getSafetyCompliance
+      tags: [safety]
+      summary: Compliance summary — open incidents and bad permits
+      parameters:
+        - { name: project_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Compliance summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  open_incidents:
+                    type: integer
+                  high_critical_incidents:
+                    type: integer
+                  expired_permits:
+                    type: integer
+                  revoked_permits:
+                    type: integer
+        '401':
+          description: Unauthenticated — missing or invalid bearer token
