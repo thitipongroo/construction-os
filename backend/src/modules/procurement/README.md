@@ -69,10 +69,10 @@ POST /api/v1/procurement/purchase-orders
 
 Kafka events emitted:
 
-- `procurement.rfq.created`, `procurement.rfq.status_changed`
-- `procurement.purchase_order.created.v1`, `procurement.po.status_changed`
+- `procurement.rfq.created.v1`, `procurement.rfq.status_changed.v1`
+- `procurement.po.created.v1`, `procurement.po.status_changed.v1`
 - `procurement.delivery.received.v1`
-- `procurement.vendor_invoice.received.v1`
+- `procurement.invoice.received.v1`, `procurement.vendor_invoice.approved.v1`
 
 ## Notes
 

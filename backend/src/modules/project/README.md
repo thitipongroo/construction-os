@@ -13,6 +13,8 @@ Emits Kafka events on all state changes for downstream consumers (Finance, Analy
 ```text
 POST   /api/v1/projects                          — create project (DRAFT)
 GET    /api/v1/projects                          — list (paginated, filter by status/type)
+GET    /api/v1/projects/mine                     — list projects for the signed-in user
+GET    /api/v1/projects/user/:userId             — list projects for a specific user (TENANT_ADMIN)
 GET    /api/v1/projects/:id                      — get detail
 PATCH  /api/v1/projects/:id                      — update metadata (not status)
 POST   /api/v1/projects/:id/transitions          — trigger status transition { to, reason? }
@@ -65,9 +67,9 @@ POST /api/v1/projects/uuid/members
 Kafka events emitted:
 
 - `construction.project.created.v1`
-- `project.updated`
-- `project.status_changed`
-- `project.archived`
+- `construction.project.updated.v1`
+- `construction.project.status_changed.v1`
+- `construction.project.archived.v1`
 
 ## Notes
 

@@ -10,6 +10,8 @@ Handles all file upload and download operations. Streams multipart uploads direc
 object storage) without buffering in memory. Validates MIME type, file size, and extension server-side.
 Triggers async antivirus scan after upload.
 
+Also runs Temporal workers (file-cleanup, zip-extraction) in a separate Deployment to handle background tasks like deleting expired files and extracting ZIP archives.
+
 ## Public API
 
 All endpoints require `Authorization: Bearer <JWT>` (validated by Kong Gateway).
@@ -68,3 +70,9 @@ BACKEND_INTERNAL_URL=http://localhost:3100
 pnpm --filter @cos/file-service dev
 pnpm --filter @cos/file-service build
 ```
+
+## Workers
+
+The service includes two Temporal workers that run in a separate deployment (controlled via command overrides):
+- **file-cleanup**: Daily hard-delete of files past their retention window.
+- **zip-extraction**: Unpacks bulk ZIP uploads in the background.

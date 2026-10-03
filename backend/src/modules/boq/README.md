@@ -102,10 +102,10 @@ POST /api/v1/boq/versions/uuid/items
 
 Kafka events emitted:
 
-- `boq.created`
-- `boq.updated`
+- `construction.boq.created.v1`
+- `construction.boq.updated.v1`
 - `construction.boq.version_created.v1`
-- `boq.version.approved`
+- `construction.boq.version_approved.v1`
 
 ## Notes
 

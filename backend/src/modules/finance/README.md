@@ -29,19 +29,35 @@ Does NOT implement double-entry bookkeeping, chart of accounts, or GL posting.
 ## Public API
 
 ```text
-GET  /api/v1/projects/:projectId/finance/summary     — budget vs actual vs committed
-GET  /api/v1/projects/:projectId/finance/budget      — budget detail with lines
-POST /api/v1/projects/:projectId/finance/budget      — create/update budget
-POST /api/v1/projects/:projectId/budget-lines        — add budget line
-GET  /api/v1/projects/:projectId/cost-transactions   — list transactions (paginated)
-POST /api/v1/projects/:projectId/payments            — record payment
-GET  /api/v1/projects/:projectId/payments            — list payments
-GET  /api/v1/finance/reports/variance                — portfolio budget variance
+GET    /api/v1/finance/budget/:projectId                 — budget summary with lines
+POST   /api/v1/finance/budget/:projectId                 — create/update budget
+POST   /api/v1/finance/budget/:projectId/lines           — add budget line
+GET    /api/v1/finance/cost-transactions                 — list transactions (tenant-wide)
+POST   /api/v1/finance/payments                          — record payment against AP
+GET    /api/v1/finance/payments                          — list payments (tenant-wide)
+PATCH  /api/v1/finance/payments/:paymentId/approve       — approve pending AP payment
+GET    /api/v1/finance/reports/variance                  — portfolio budget variance
+POST   /api/v1/finance/customers                         — register client/customer
+GET    /api/v1/finance/customers                         — list customers
+POST   /api/v1/finance/contracts                         — create contract
+GET    /api/v1/finance/contracts                         — list contracts
+POST   /api/v1/finance/contracts/:id/document            — attach document
+POST   /api/v1/finance/contracts/:id/sign                — sign contract
+POST   /api/v1/finance/contracts/:id/sign-links          — issue sign magic-link
+GET    /api/v1/finance/contracts/:id/signatures          — list signatures
+POST   /api/v1/finance/contracts/:id/activate            — activate contract
+POST   /api/v1/finance/contracts/:id/terminate           — terminate contract
+POST   /api/v1/finance/billing                           — create client billing (AR)
+GET    /api/v1/finance/billing                           — list client billings (AR)
+GET    /api/v1/finance/billing/:billingId                — get single billing
+PATCH  /api/v1/finance/billing/:billingId/approve        — approve billing
+POST   /api/v1/finance/ar-receipts                       — record AR receipt
+GET    /api/v1/finance/cashflow-forecast/:projectId      — cash flow forecast
 ```
 
 ## Kafka Consumers
 
-Consumer group `finance.shared`; the authoritative list is `SUBSCRIBED_EVENT_TYPES` in
+Consumer group `finance-consumer-group`; the authoritative list is `SUBSCRIBED_EVENT_TYPES` in
 `finance.consumer.ts`.
 
 | Event                                 | Action                                     |

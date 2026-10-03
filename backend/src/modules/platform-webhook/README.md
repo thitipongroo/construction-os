@@ -22,7 +22,9 @@ Request body is generic — no CRM-specific adapter exists in Phase 25:
 { "tenant_id": "<uuid>", "contract_reference": "optional-string" }
 ```
 
-Required header: `X-Webhook-Signature: sha256=<hex>`
+Required headers: 
+- `X-Webhook-Signature: sha256=<hex>`
+- `X-Webhook-Timestamp: <iso-8601 or unix>`
 
 ## Dependencies
 
@@ -42,7 +44,7 @@ Injected from AWS Secrets Manager (cloud) or HashiCorp Vault (on-premise) — ne
 ## Usage
 
 ```text
-expectedSig = "sha256=" + HMAC-SHA256(PLATFORM_WEBHOOK_SECRET, rawBody).hexDigest()
+expectedSig = "sha256=" + HMAC-SHA256(PLATFORM_WEBHOOK_SECRET, timestamp + rawBody).hexDigest()
 compare(X-Webhook-Signature, expectedSig) using timingSafeEqual
 ```
 

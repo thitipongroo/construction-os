@@ -26,10 +26,10 @@ Consumer group: `analytics-consumer-group`
 
 | Topic                                    | Event type                   | Description                 |
 | ---------------------------------------- | ---------------------------- | --------------------------- |
-| `project.project.created.v1`             | `ProjectCreatedEvent`        | New project created         |
-| `project.project.updated.v1`             | `ProjectUpdatedEvent`        | Project metadata updated    |
+| `construction.project.created.v1`        | `ProjectCreatedEvent`        | New project created         |
+| `construction.project.updated.v1`        | `ProjectUpdatedEvent`        | Project metadata updated    |
 | `procurement.purchase_order.created.v1`  | `PurchaseOrderCreatedEvent`  | PO created                  |
-| `procurement.po.status_changed`          | `PoStatusChangedEvent`       | PO status transition        |
+| `procurement.po.status_changed.v1`       | `PoStatusChangedEvent`       | PO status transition        |
 | `procurement.delivery.received.v1`       | `DeliveryReceivedEvent`      | Delivery recorded           |
 | `procurement.vendor_invoice.received.v1` | `VendorInvoiceReceivedEvent` | Invoice received            |
 | `site-ops.daily_report.submitted.v1`     | `DailyReportSubmittedEvent`  | Site daily report submitted |

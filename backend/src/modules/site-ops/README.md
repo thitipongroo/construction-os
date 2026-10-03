@@ -18,17 +18,28 @@ conflict resolution. Primary data-capture module for field workers (SITE_WORKER,
 
 ### Issues
 
-| Method  | Path                           | Roles                                                                     |
-| ------- | ------------------------------ | ------------------------------------------------------------------------- |
-| `POST`  | `/api/v1/site/issues`          | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, TENANT_ADMIN                 |
-| `PATCH` | `/api/v1/site/issues/:issueId` | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, SAFETY_OFFICER, TENANT_ADMIN |
-| `GET`   | `/api/v1/site/issues`          | All roles                                                                 |
+| Method  | Path                                     | Roles                                                                     |
+| ------- | ---------------------------------------- | ------------------------------------------------------------------------- |
+| `POST`  | `/api/v1/site/issues`                    | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, TENANT_ADMIN                 |
+| `PATCH` | `/api/v1/site/issues/:issueId`           | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, SAFETY_OFFICER, TENANT_ADMIN |
+| `PATCH` | `/api/v1/site/issues/:issueId/status`    | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, SAFETY_OFFICER, TENANT_ADMIN |
+| `POST`  | `/api/v1/site/issues/:issueId/escalate`  | SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, SAFETY_OFFICER, TENANT_ADMIN |
+| `GET`   | `/api/v1/site/issues`                    | All roles                                                                 |
 
 ### Inspections
 
-| Method | Path                       | Roles                                       |
-| ------ | -------------------------- | ------------------------------------------- |
-| `POST` | `/api/v1/site/inspections` | SITE_ENGINEER, SAFETY_OFFICER, TENANT_ADMIN |
+| Method  | Path                                     | Roles                                       |
+| ------- | ---------------------------------------- | ------------------------------------------- |
+| `POST`  | `/api/v1/site/inspections`               | SITE_ENGINEER, SAFETY_OFFICER, TENANT_ADMIN |
+| `GET`   | `/api/v1/site/inspections`               | All field + management roles                |
+| `GET`   | `/api/v1/site/inspections/:inspectionId` | All field + management roles                |
+| `PATCH` | `/api/v1/site/inspections/:inspectionId` | SITE_ENGINEER, SAFETY_OFFICER, TENANT_ADMIN |
+
+### Materials
+
+| Method | Path                                      | Roles                                                     |
+| ------ | ----------------------------------------- | --------------------------------------------------------- |
+| `POST` | `/api/v1/site/reports/:reportId/materials`| SITE_WORKER, SITE_ENGINEER, PROJECT_MANAGER, TENANT_ADMIN |
 
 ### Conflict Records
 

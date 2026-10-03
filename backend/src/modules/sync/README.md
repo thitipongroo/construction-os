@@ -12,9 +12,12 @@ and defined in Phase 6 — this module applies them; it does not invent new ones
 ## Public API
 
 ```text
-GET  /api/v1/sync/delta?since=<timestamp>&entity_types[]=…  — delta pull
-POST /api/v1/sync/push                                       — batched offline writes
-POST /api/v1/sync/resolve                                    — resolve one entity
+GET    /api/v1/sync/delta                            — delta pull
+POST   /api/v1/sync/push                             — batched offline writes
+POST   /api/v1/sync/resolve                          — resolve one entity
+POST   /api/v1/sync/exhausted                        — report mutation exhaustion
+GET    /api/v1/sync/exhaustions                      — list queued exhaustions (TENANT_ADMIN)
+PATCH  /api/v1/sync/exhaustions/:exhaustionId/resolve — resolve queued exhaustion (TENANT_ADMIN)
 ```
 
 `/sync/resolve` wire contract:

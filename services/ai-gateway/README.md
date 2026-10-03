@@ -48,8 +48,8 @@ past the token's `exp`.
 
 | EP        | Status | Trigger                            |
 | --------- | ------ | ---------------------------------- |
-| EP-AI-001 | STUB   | AI Gateway activation              |
-| EP-AI-002 | STUB   | RAG retrieval quality insufficient |
+| EP-AI-001 | WIRED  | AI Gateway activation              |
+| EP-AI-002 | WIRED  | RAG retrieval quality insufficient |
 | EP-AI-006 | STUB   | Governance review complete         |
 | EP-AI-014 | STUB   | Need to swap LLM provider          |
 

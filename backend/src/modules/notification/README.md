@@ -29,6 +29,7 @@ PATCH /api/v1/notifications/:id/read        — mark as read
 PATCH /api/v1/notifications/read-all        — mark all as read
 GET   /api/v1/notifications/preferences     — get channel preferences
 PATCH /api/v1/notifications/preferences     — update channel preferences
+POST  /api/v1/notifications/device-token    — register push device token
 GET   /api/v1/notifications/stream          — SSE stream (in-app channel)
 ```
 

@@ -19,8 +19,33 @@ Also handles Keycloak realm provisioning when a new tenant is created.
 ```text
 POST /api/v1/admin/tenants          — provision new tenant (SYSTEM_ADMIN only)
 GET  /api/v1/admin/tenants          — list tenants (SYSTEM_ADMIN only)
-PATCH /api/v1/admin/tenants/:id     — update tenant metadata
-POST /api/v1/admin/tenants/:id/deactivate — deactivate tenant
+GET  /api/v1/admin/tenants/provisioning   — list provisioning state (SYSTEM_ADMIN only)
+PATCH /api/v1/admin/tenants/:tenantId/dedicated-db — assign dedicated DB
+PATCH /api/v1/admin/tenants/:tenantId/mark-contracted — start enterprise provisioning
+PATCH /api/v1/admin/tenants/:tenantId/deactivate — deactivate tenant
+POST /api/v1/admin/tenants/:tenantId/provisioning/approve — approve provisioning
+POST /api/v1/admin/tenants/:tenantId/provisioning/abort — abort provisioning
+
+### User Management & Self-Service
+```text
+GET    /api/v1/users                           — list users (TENANT_ADMIN)
+POST   /api/v1/users                           — create user (TENANT_ADMIN)
+PATCH  /api/v1/users/:userId/role              — change user role (TENANT_ADMIN)
+GET    /api/v1/users/:userId/roles             — get user roles (TENANT_ADMIN)
+PUT    /api/v1/users/:userId/roles             — set user roles (TENANT_ADMIN)
+POST   /api/v1/users/:userId/reset-password    — issue temp password (TENANT_ADMIN)
+POST   /api/v1/users/:userId/reset-password/email — send reset link (TENANT_ADMIN)
+PATCH  /api/v1/users/:userId/deactivate        — deactivate user (TENANT_ADMIN)
+GET    /api/v1/users/me                        — signed-in user record
+PATCH  /api/v1/users/me/photo                  — set profile photo
+POST   /api/v1/users/me/password-reset-email   — email reset link to self
+```
+
+### Tenant Settings & Info
+```text
+GET    /api/v1/tenant                          — signed-in user's tenant info
+GET    /api/v1/tenant/settings                 — get tenant settings (TENANT_ADMIN)
+PATCH  /api/v1/tenant/settings                 — update tenant settings (TENANT_ADMIN)
 ```
 
 Middleware (applied globally): `TenantMiddleware` — extracts `tenantId` from JWT, sets `req.tenantId`.
@@ -119,7 +144,7 @@ async findProjects() {
 Provisioning flow:
 
 1. `POST /api/v1/admin/tenants` → creates tenant record in `platform.tenants` + creates Keycloak realm
-2. Emits `tenant.created` Kafka event
+2. Emits `identity.tenant.created.v1` Kafka event
 
 ## Notes
 

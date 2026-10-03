@@ -15,13 +15,22 @@ TENANT_ADMIN and FINANCE roles.
 ## Public API
 
 ```text
-POST /api/v1/auth/otp/request       — request SMS OTP (Path A)
-POST /api/v1/auth/otp/verify        — verify OTP, returns JWT + refresh token
-POST /api/v1/auth/refresh           — rotate refresh token
-POST /api/v1/auth/logout            — invalidate refresh token
-POST /api/v1/auth/mfa/enroll        — initiate TOTP setup (returns QR URI)
-POST /api/v1/auth/mfa/verify        — confirm TOTP enrollment
-POST /api/v1/auth/mfa/authenticate  — verify TOTP during login (Path B only)
+POST   /api/v1/auth/otp/request                   — request SMS OTP (Path A)
+POST   /api/v1/auth/otp/verify                    — verify OTP, returns JWT + refresh token
+POST   /api/v1/auth/otp/attest                    — attest device trust before OTP
+POST   /api/v1/auth/devices                       — enrol device for trust
+GET    /api/v1/auth/devices                       — list trusted devices
+DELETE /api/v1/auth/devices/:deviceId             — revoke trusted device
+POST   /api/v1/auth/devices/attestation-challenge — mint challenge for attestation
+GET    /api/v1/auth/devices/:deviceId/trust       — get device trust score
+POST   /api/v1/auth/step-up/request               — send step-up code
+POST   /api/v1/auth/step-up/verify                — exchange code for action token
+GET    /api/v1/auth/roles/:role/permissions       — list permissions for a role
+POST   /api/v1/auth/refresh                       — rotate refresh token
+POST   /api/v1/auth/logout                        — invalidate refresh token
+POST   /api/v1/auth/mfa/enroll                    — initiate TOTP setup (returns QR URI)
+POST   /api/v1/auth/mfa/verify                    — confirm TOTP enrollment
+POST   /api/v1/auth/mfa/authenticate              — verify TOTP during login (Path B only)
 ```
 
 JWT payload includes: `sub` (user_id), `tenantId`, `role`, `keycloakUserId`.

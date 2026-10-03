@@ -1,6 +1,6 @@
 # Construction OS — Web App (Next.js + PWA)
 
-**Runtime:** Next.js 14 + next-pwa (Workbox) + TypeScript
+**Runtime:** Next.js 16 + Serwist (Workbox) + TypeScript
 **Platform:** Tablet / laptop browser — **online + offline** (unified)
 **Phase:** Phase 10 (UI scaffolding + PWA offline engine), Phase 3–7 (feature screens)
 
@@ -22,13 +22,13 @@ None — consumes backend REST API at `NEXT_PUBLIC_API_URL`.
 
 - **IndexedDB** via `idb` library (typed, versioned schema) — offline entity cache
 - **Background Sync API** via Workbox — mutation queue replay on reconnect
-- **Service Worker** via `next-pwa` (Workbox) — asset + API response caching
+- **Service Worker** via `serwist` (Workbox) — asset + API response caching
 
 ## Dependencies
 
 - Backend REST API (`/api/v1/*`)
 - Keycloak OIDC for auth (Phase 2)
-- `next-pwa` — Workbox-based service worker generation
+- `serwist` and `@serwist/turbopack` — Workbox-based service worker generation
 - `idb` — typed IndexedDB wrapper
 
 ## Configuration

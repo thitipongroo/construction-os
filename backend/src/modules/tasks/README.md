@@ -12,9 +12,13 @@ they are **not** enforced offline. Source: `00_master` §Phase 6 Task Completion
 ## Public API
 
 ```text
-GET   /api/v1/projects/:projectId/tasks   — list tasks for a project
-POST  /api/v1/projects/:projectId/tasks   — create task
-PATCH /api/v1/tasks/:taskId               — update task (including status transitions)
+GET   /api/v1/projects/:projectId/tasks             — list tasks for a project
+POST  /api/v1/projects/:projectId/tasks             — create task
+PATCH /api/v1/tasks/:taskId                         — update task (including status transitions)
+GET   /api/v1/projects/:projectId/progress          — project progress (BOQ-value-weighted)
+GET   /api/v1/tasks/portfolio-summary               — tenant-wide task counts
+GET   /api/v1/tasks/portfolio-critical-path         — critical tasks across all projects
+GET   /api/v1/projects/:projectId/critical-path     — critical path for a specific project
 ```
 
 ## Dependencies

@@ -14,7 +14,7 @@ Responsibilities:
 - Embed text via EP-AI-012 `EmbeddingProvider` interface (never call OpenAI SDK directly)
 - Store embeddings in pgvector (`vector(1536)` column)
 - Store embeddings in OpenSearch (`{tenant_id}-embeddings` index, k-NN)
-- Batch processing via Kafka consumer (`file.uploaded`, `site.report.created` events)
+- Batch processing via Kafka consumer (`file.uploaded.v1`, `site.report.created.v1` events)
 
 ## Public API
 
@@ -27,7 +27,7 @@ Responsibilities:
 - OpenAI text-embedding-3-small (via EP-AI-012 — never call SDK directly)
 - PostgreSQL via PgBouncer (pgvector — port 6432)
 - OpenSearch (k-NN index)
-- Kafka (consumer: `file.uploaded`, `site.report.created`)
+- Kafka (consumer: `file.uploaded.v1`, `site.report.created.v1`)
 
 ## Extension points
 

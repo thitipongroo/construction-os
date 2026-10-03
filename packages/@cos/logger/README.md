@@ -14,7 +14,7 @@ use IDs only. Never use `console.log`.
 import { createLogger, LogContext } from '@cos/logger';
 ```
 
-### `createLogger(service, module): Logger`
+### `createLogger(module): Logger`
 
 Returns a Pino logger pre-configured with JSON output, structured context, and log-level control via `LOG_LEVEL` env var.
 
@@ -24,6 +24,8 @@ interface LogContext {
   userId?: string;
   traceId?: string; // from OpenTelemetry span
   spanId?: string;
+  service?: string;
+  module?: string;
   event?: string; // e.g. 'purchase-order.created'
   durationMs?: number;
   metadata?: Record<string, unknown>;
@@ -49,7 +51,7 @@ Log methods: `.info(ctx, msg)`, `.warn(ctx, msg)`, `.error(ctx, msg)`, `.debug(c
 ```typescript
 import { createLogger } from '@cos/logger';
 
-const logger = createLogger('cos-backend', 'procurement');
+const logger = createLogger('procurement');
 
 logger.info(
   { tenantId, userId, event: 'purchase-order.created', durationMs: 45 },
