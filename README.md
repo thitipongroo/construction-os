@@ -1,4 +1,4 @@
-# Construction OS
+# CONSTRUCTION OS
 
 An AI-native Construction Operating System built for global enterprise scale.
 
